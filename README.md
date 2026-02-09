@@ -17,7 +17,7 @@ Ring sim
 - Random generation and resets
 - Trajectory drawing of moons an created bodies
 - 'Collisions' between particles and planet/moons/created bodies
-Controls:
+- Controls:
   - WASD for camera movement
   - ESC to close
   - L/K to increase/decrease time warp
