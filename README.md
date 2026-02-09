@@ -20,7 +20,7 @@ Ring sim
 - Controls:
   - WASD for camera movement
   - ESC to close
-  - L/K to increase/decrease time warp
+  - L/J to increase/decrease time warp, K to reset time warp
   - Left click hold to create body
       - Up/down arrows to increase/decrease mass
       - Right/left arrows to increase/decrease size
