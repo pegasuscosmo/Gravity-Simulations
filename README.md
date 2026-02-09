@@ -6,7 +6,7 @@ N-body Sim
 - Very quickly put together and not at all optimized.
 - Uses the Barnes-Hut algorithm to reduce calculations and velocity verlet for more accuracy.
 - Preset generation values, changeable in code
-Controls: 
+- Controls: 
   - WASD for camera movement
   - ESC to close
 
