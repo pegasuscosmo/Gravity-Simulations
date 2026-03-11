@@ -33,3 +33,4 @@ Saturn Ring Sim
 - Wisdom Holman integration for extreme orbital stability (using elliptical lagrange coefficients to propagate kepler orbits)
 - no time warp, body creation, or camera controls
 - particle-particle statistical collisions (uses an assumed global optical depth- better for simulating individual rings with low tau variance)
+- plots a graph of radial density
