@@ -27,6 +27,7 @@ Ring Sim
       - Right/left arrows to increase/decrease size
       - Shift to increase increments for mass and velocity
       - Release left click to finalize body
+
 Saturn Ring Sim
 - uses GPU acceleration with Taichi
 - Wisdom Holman integration for extreme orbital stability (using elliptical lagrange coefficients to propagate kepler orbits)
