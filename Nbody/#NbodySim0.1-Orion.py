@@ -212,7 +212,6 @@ clock=pygame.time.Clock()
 
 offsetDir=np.array([0,0])
 while True:
-    break
     for event in pygame.event.get():
                 if event.type==QUIT:
                     pygame.quit()
@@ -260,18 +259,3 @@ while True:
     print(calcs/bodyCount**2, ",", pureCalcs/bodyCount**2, ",", quadsTravelled, ",", pointInsertCalled,",",fps)
     pygame.display.update()
     clock.tick(60)
-
-print("\n",bodyCount,"\n")
-start=time.time()
-calc()
-end=time.time()
-print("\nBH")
-timer=end-start
-print(timer,1/timer,timer/bodyCount)
-
-start=time.time()
-calc()
-end=time.time()
-print("\nNaive")
-timer=end-start
-print(timer,1/timer,timer/bodyCount)
