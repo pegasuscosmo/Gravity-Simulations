@@ -34,3 +34,11 @@ Saturn Ring Sim
 - no time warp, body creation, or camera controls
 - particle-particle statistical collisions (uses an assumed global optical depth- better for simulating individual rings with low tau variance)
 - plots a graph of radial density
+
+Barnes Hut N Body (Optimized)
+- Similar to the first N Body sim, but GPU optimized, and uses more efficient tree construction/traversal
+- Color/brightness change by density
+- standard velocity verlet integration
+- Controls:
+  - WASD for movement
+  - I/K to zoom in/out
