@@ -46,6 +46,6 @@ Barnes Hut N Body (Optimized)
 Ring Sim 2
 - Remake of Ring Sim using Taichi parallelism/optimizations, allows for higher particle counts
 - Revamped UI, run-time generation editing
-  - Only dt, G, and particle counts/major cap need to be edited in code 
+  - Only dt, G, window resolution, and particle counts/major cap need to be edited in code 
 - No timewarp or random generation
 - Controls shown in UI
