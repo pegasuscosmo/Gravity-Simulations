@@ -36,9 +36,16 @@ Saturn Ring Sim
 - plots a graph of radial density
 
 Barnes Hut N Body (Optimized)
-- Similar to the first N Body sim, but GPU optimized, and uses more efficient tree construction/traversal
+- Similar to the first N Body sim, but optimized for parallelism, and uses more efficient tree construction/traversal
 - Color/brightness change by density
 - standard velocity verlet integration
 - Controls:
   - WASD for movement
   - I/K to zoom in/out
+
+Ring Sim 2
+- Remake of Ring Sim using Taichi parallelism/optimizations, allows for higher particle counts
+- Revamped UI, run-time generation editing
+  - Only dt, G, and particle counts/major cap need to be edited in code 
+- No timewarp or random generation
+- Controls shown in UI
