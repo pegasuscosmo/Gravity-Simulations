@@ -10,13 +10,13 @@ root.geometry("300x500")
 #physics
 G=1 #6.6743e-20 #irl, in km
 dt=1
-e=10 #softening for majors
+e=0.1 #softening for majors
 #   trajectories
 steps=1000
 dtT=dt #different dtT causes 'wiggly' trajectories when close proximity involved
 
 #ti window
-sW,sH=1620,950 #screen resolution
+sW,sH=1620,1061 #screen resolution
 window = ti.ui.Window("Ring Semi-NBody Sim", (sW, sH))
 canvas = window.get_canvas()
 gui = window.get_gui()
@@ -343,7 +343,7 @@ errorLabel.grid(row=13,column=0,columnspan=4)
 def init():
     global posN,velN,massN,radN,colorN
     global body,LMB,paused #globals to avoid local variable assignment
-    global innerRad, outerRad
+    global innerRad, outerRad, offset, zoom
 
     iRtemp=innerEntry.get() #outputs string
     if iRtemp!="": #if nothing in the text entry, use default
@@ -389,7 +389,8 @@ def init():
     majorRadii.fill(0); trajectories.fill(0)
     vertices.fill(0); trajN.fill(0)
     majorNCurrent[None]=len(bodies)
-
+    zoom=0.95
+    offset=ti.Vector([0.0,0.0])
     # init for majors
     for i in range(majorNCurrent[None]):
         b=bodies[i]
@@ -558,14 +559,13 @@ camScale=tk.Scale(root,from_=25,to=400,orient='horizontal')
 camScale.grid(row=15,column=1,columnspan=3)
 camLabel=tk.Label(root,text="Camera Sensitivity %")
 camLabel.grid(row=15,column=0)
-createScale=tk.Scale(root,from_=10,to=500,orient='horizontal')
+createScale=tk.Scale(root,from_=1,to=1000,orient='horizontal')
 createScale.grid(row=16,column=1,columnspan=3)
-createLabel=tk.Label(root,text="Creation Sensitivity %")
+createLabel=tk.Label(root,text="Creation Sensitivity %\n(     ⬆️⬇️)")
 createLabel.grid(row=16,column=0)
 camScale.set(100)
 createScale.set(100)
 
-# ----------------------------------------------------- MAIN LOOP -----------------------------------------------------
 
 while window.running:
     root.update_idletasks()
@@ -608,6 +608,12 @@ while window.running:
     if window.is_pressed('d'):
         offset[0]-=camSense/100*moveS/zoom/sW*1000    
 
+    #scale keybinds
+    if window.is_pressed(ti.ui.UP):
+        createScale.set(createSense+10)
+    if window.is_pressed(ti.ui.DOWN):
+        createScale.set(createSense-10)
+
     if majorNCurrent[None]>=majorN and body:
         body=False #disable if major cap reached
     offset.normalized() #set speed of camera to 1
@@ -630,7 +636,7 @@ while window.running:
             posN=cursor #set position
         else:
             velN=posN-cursor #set velocity
-            velN*=10
+            velN*=10*createSense/100
             #creation controls
             if window.is_pressed('t'):
                 massN+=createSense/100*10
@@ -649,7 +655,8 @@ while window.running:
     elif LMB:
         LMB=False #reset flag
         if not esc: #if not cancelled add body
-            addBodyN(posN,velN,massN,radN,ti.Vector(colorN),offset,zoom)
+            if radN>0:
+                addBodyN(posN,velN,massN,radN,ti.Vector(colorN),offset,zoom)
             #reset variables
             posN=ti.Vector([0.0,0.0])
             drawPosN[0]=posN
@@ -660,6 +667,11 @@ while window.running:
             trajN.fill(0)
     if not window.is_pressed(ti.ui.LMB):
         esc=False #reset flag
+        posN=ti.Vector([0.0,0.0])
+        drawPosN[0]=posN
+        velN=ti.Vector([0.0,0.0])
+        massN=0
+        radN=0
 
     #draw
     canvas.set_image(pixels)
@@ -676,7 +688,7 @@ while window.running:
         gui.text(f"Velocity: {velN.norm():.2f}")
     with gui.sub_window("Controls: ", 0.1,0, 0.1, 0.1):
         gui.text("Cam movement: WASD\nZoom: IK\nCreation: hold LMB\n- Mass: TG\n- Radius: HF")
-
+    
     #print(window.get_window_shape()) #use to find window size
     #update display
     window.show()
