@@ -267,14 +267,19 @@ def submitRing(idx=-1):
     inn=innerEntry.get()
     out=outerEntry.get()
     per=percentEntry.get()
-    if inn=="" or out=="" or per=="":
-        errorLabel.config(text="Nothing to Append")
-    l=[float(inn),float(out),float(per)]
-    errorLabel.config(text=" ")
-    if idx!=-1:
-        rings[idx]=l
-    else:
+    if idx==-1:
+        if inn=="" or out=="" or per=="":
+            errorLabel.config(text="Nothing to Append")
+            return
+        l=[float(inn),float(out),float(per)]
+        errorLabel.config(text=" ")
         rings.append(l)
+    if inn!="":
+        rings[idx][0]=float(inn)
+    if out!="":
+        rings[idx][1]=float(out)
+    if per!="":
+        rings[idx][2]=float(per)
     ringLabel.config(text=f"Rings: {listToText(rings)}")
 
 def removeRing():
@@ -300,8 +305,7 @@ def replaceRing():
         errorLabel.config(text=f"Invalid Index: {idx}")
     elif len(rings)>0:
         if idx=="":
-            removeRing()
-            submitRing()
+            submitRing(len(rings)-1)
         else:
             submitRing(int(idx))
         errorLabel.config(text=" ")
