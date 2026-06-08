@@ -16,7 +16,7 @@ steps=1000
 dtT=dt #different dtT causes 'wiggly' trajectories when close proximity involved
 
 #ti window
-sW,sH=1620,1061 #screen resolution
+sW,sH=1620,950 #screen resolution
 window = ti.ui.Window("Ring Semi-NBody Sim", (sW, sH))
 canvas = window.get_canvas()
 gui = window.get_gui()
@@ -75,6 +75,7 @@ massN=0 #mass
 radN=0 #radius
 colorN=(0,0,0) #color
 trajN=ti.Vector.field(2,dtype=ti.f32,shape=steps) #projected position
+tau=2*3.14159
 
 def listToText(l):
     s=""
@@ -118,17 +119,18 @@ def initTI():
         for i in range(np):
             innerRad=ti.cast(ring[0], ti.f32)
             outerRad=ti.cast(ring[1], ti.f32)
-            r=0
+            r=0.0
+            theta=0.0
             x=0.0
             y=0.0
             d=ti.Vector([0,0])
-            while r<innerRad or r>outerRad: #stay inside ring
-                z=ti.cast(outerRad*10+sW/2,ti.f32)
-                x=(ti.random()-0.5)*z
-                y=(ti.random()-0.5)*z
-                d=COM-ti.Vector([x,y]) #use COM as center point
-                r=d.norm()
-            posField[f+i]=ti.Vector([x,y])
+            while r<innerRad:
+                r=ti.sqrt(ti.random())*outerRad
+            theta=ti.random()*tau
+            x=ti.cos(theta)*r
+            y=ti.sin(theta)*r
+            posField[f+i]=ti.Vector([x,y])+COM
+            d=ti.Vector([x,y])
             s=ti.sqrt(G*m/r) #orbital speed for circular orbit
             velField[f+i]=ti.Vector([d[1], -d[0]])/r*s #set velocity perpendicular to d
         f+=np
