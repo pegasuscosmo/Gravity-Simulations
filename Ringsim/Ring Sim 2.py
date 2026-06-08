@@ -109,28 +109,29 @@ def initTI():
         COM+=majorPosField[i]*majorMassField[i]
         m+=majorMassField[i]
     COM/=m #COM formula
-    n=0
+    f=0
     ti.loop_config(serialize=True)
     for ri in range(ringN[None]):
         ring=ringVals[ri]
         np=ti.cast(particleN*ring[2],ti.int32)
         ti.loop_config(serialize=False)
         for i in range(np):
-            innerRad=ring[0]
-            outerRad=ring[1]
+            innerRad=ti.cast(ring[0], ti.f32)
+            outerRad=ti.cast(ring[1], ti.f32)
             r=0
-            x=0
-            y=0
+            x=0.0
+            y=0.0
             d=ti.Vector([0,0])
             while r<innerRad or r>outerRad: #stay inside ring
-                x=(ti.random()-0.5)*outerRad*10+sW/2
-                y=(ti.random()-0.5)*outerRad*10+sH/2
+                z=ti.cast(outerRad*10+sW/2,ti.f32)
+                x=(ti.random()-0.5)*z
+                y=(ti.random()-0.5)*z
                 d=COM-ti.Vector([x,y]) #use COM as center point
                 r=d.norm()
-            posField[n+i]=ti.Vector([x,y])
+            posField[f+i]=ti.Vector([x,y])
             s=ti.sqrt(G*m/r) #orbital speed for circular orbit
-            velField[n+i]=ti.Vector([d[1], -d[0]])/r*s #set velocity perpendicular to d
-        n+=np
+            velField[f+i]=ti.Vector([d[1], -d[0]])/r*s #set velocity perpendicular to d
+        f+=np
     for s in range(steps):
         for i in range(majorNCurrent[None]):
             trajColors[s*majorN+i]=majorColors[i] #set trajectory colors
@@ -142,57 +143,93 @@ def submit(idx=-1):
     vel=velEntry.get()
     mass=massEntry.get()
     rad=radiusEntry.get()
-    if pos=="":
-        errorLabel.config(text="No Position Given")
+    if idx==-1:
+        if pos=="":
+            errorLabel.config(text="No Position Given")
+            return
+        if vel=="":
+            errorLabel.config(text="No Velocity Given")
+            return
+        if mass=="":
+            errorLabel.config(text="No Mass Given")
+            return
+        if rad=="":
+            errorLabel.config(text="No Radius Given")
+            return
+    anyGiven=pos!="" or vel!="" or mass!="" or rad!=""
+    if not anyGiven:
+        errorLabel.config(text="No Parameters Given")
         return
-    if vel=="":
-        errorLabel.config(text="No Velocity Given")
-        return
-    if mass=="":
-        errorLabel.config(text="No Mass Given")
-        return
-    if rad=="":
-        errorLabel.config(text="No Radius Given")
-        return
-    if not mass.isnumeric():
+    if not mass.isnumeric() and (idx==-1 or mass!=""):
         errorLabel.config(text=f"Invalid Mass {mass}")
-    if not rad.isnumeric():
+        return
+    t=""
+    for i in rad:
+        if i!=".":
+            t+=i
+    if not t.isnumeric() and (idx==-1 or t!=""):
+        print(rad)
         errorLabel.config(text=f"Invalid Radius {rad}")
-    t=""
-    for i in pos:
-        if i==",":
-            x=t
-            t=""
-        elif i!=" ":
-            t+=i
-    y=t
-    t=""
-    for i in vel:
-        if i==",":
-            xv=t
-            t=""
-        elif i!=" ":
-            t+=i
-    yv=t
-    if not x.isnumeric():
-        errorLabel.config(text=f"Invalid X Coordinate {x}")
-    if not y.isnumeric():
-        errorLabel.config(text=f"Invalid Y Coordinate {y}")
-    if not xv.isnumeric():
-        errorLabel.config(text=f"Invalid X Velocity {xv}")
-    if not yv.isnumeric():
-        errorLabel.config(text=f"Invalid Y Velocity {yv}")
-    x=float(x)
-    y=float(y)
-    xv=float(xv)
-    yv=float(yv)
-    mass=float(mass)
-    rad=float(rad)
-    l=[x,y,xv,yv,mass,rad]
+        return
+    if pos!="":
+        t=""
+        for i in pos:
+            if i==",":
+                x=t
+                t=""
+            elif i!=" ":
+                t+=i
+        y=t
+        if not x.isnumeric():
+            errorLabel.config(text=f"Invalid X Coordinate {x}")
+            return
+        if not y.isnumeric():
+            errorLabel.config(text=f"Invalid Y Coordinate {y}")
+            return
+        x=float(x)
+        y=float(y)
+    if vel!="":
+        t=""
+        t2=""
+        for i in vel:
+            if i==",":
+                xv=t
+                xv2=t2
+                t=""
+                t2=""
+            elif i!=" ":
+                t+=i
+                if i!="-":
+                    t2+=i
+        yv=t
+        yv2=t2
+        if not xv2.isnumeric():
+            errorLabel.config(text=f"Invalid X Velocity {xv}")
+            return
+        if not yv2.isnumeric():
+            errorLabel.config(text=f"Invalid Y Velocity {yv}")
+            return
+        xv=float(xv)
+        yv=float(yv)
+    if mass!="":
+        mass=float(mass)
+    if rad!="":
+        rad=float(rad)
+    
     errorLabel.config(text=" ")
     if idx!=-1:
-        bodies[idx]=l
+        if pos!="":
+            bodies[idx][0]=x
+            bodies[idx][1]=y
+        if vel!="":
+            bodies[idx][2]=xv
+            bodies[idx][3]=yv
+        if mass!="":
+            bodies[idx][4]=mass
+        if rad!="":
+            bodies[idx][5]=rad
     else:
+        l=[x,y,xv,yv,mass,rad]
         bodies.append(l)
     bodyLabel.config(text=f"Bodies: {listToText(bodies)}")
 
@@ -219,8 +256,7 @@ def replace():
         errorLabel.config(text=f"Invalid Index: {idx}")
     elif len(bodies)>0:
         if idx=="":
-            remove()
-            submit()
+            submit(len(bodies)-1)
         else:
             submit(int(idx))
         errorLabel.config(text=" ")
