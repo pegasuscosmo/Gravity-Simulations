@@ -5,7 +5,7 @@ ti.init(arch=ti.cpu,default_fp=ti.f32)
 #tk init
 root=tk.Tk()
 root.title("Generation Editor")
-root.geometry("300x500")
+root.geometry("300x600")
 
 #physics
 G=1 #6.6743e-20 #irl, in km
@@ -39,6 +39,8 @@ bodies=[ #default
 #colors
 particleColor=ti.Vector([0.4,0.4,0.4])
 rainbowMode=False
+rSpMult=ti.field(dtype=ti.f32,shape=())
+rParam=ti.field(dtype=ti.f32,shape=())
 brightCutoff=0.2 #brightness cutoff for major bodies
 
 #fields
@@ -484,6 +486,13 @@ def stepMajors():
     for i in range(majorNCurrent[None]): #verlet pos half step
         majorPosField[i]+=majorVelField[i]*dt/2 #same as first one
 
+@ti.func
+def rainFunc(x: ti.int32) -> ti.f32:
+    x=ti.cast(x,ti.f32)
+    y=(x+1)**rParam[None] /15
+    return y
+
+
 pixels=ti.Vector.field(3,dtype=ti.f32,shape=(sW,sH))
 drawMajorPos=ti.Vector.field(2,dtype=ti.f32,shape=majorN)
 drawMajorRadii=ti.field(dtype=ti.f32,shape=majorN)
@@ -499,22 +508,23 @@ def renderImg(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32), rainbowMode: t
             y=ti.cast(drawPos[1],ti.int64)
             if x>0 and y>0 and x<sW and y<sH:
                 if rainbowMode==1:
-                    c=ti.Vector([0,0,0])
-                    if x<sW/7:
-                        c=ti.Vector([1,0.2,0.2])
-                    elif x<2*sW/7:
-                        c=ti.Vector([1,0.6,0.2])
-                    elif x<3*sW/7:
-                        c=ti.Vector([1,1,0.2])
-                    elif x<4*sW/7:
-                        c=ti.Vector([0.2,1,0.2])
-                    elif x<5*sW/7:
-                        c=ti.Vector([0.2,0.3,1])
-                    elif x<6*sW/7:
-                        c=ti.Vector([1,0.2,1])
+                    c=ti.Vector([0.0,0.0,0.0])
+                    s=velField[i].norm()
+                    if s<rainFunc(1)*rSpMult[None]:
+                        c=ti.Vector([1,0.2,0.0])
+                    elif s<rainFunc(2)*rSpMult[None]:
+                        c=ti.Vector([1,0.6,0.0])
+                    elif s<rainFunc(3)*rSpMult[None]:
+                        c=ti.Vector([1,1,0.0])
+                    elif s<rainFunc(4)*rSpMult[None]:
+                        c=ti.Vector([0.0,1,0.20])
+                    elif s<rainFunc(5)*rSpMult[None]:
+                        c=ti.Vector([0.0,0.6,0.9])
+                    elif s<rainFunc(6)*rSpMult[None]:
+                        c=ti.Vector([0.6,0.0,1])
                     else:
-                        c=ti.Vector([1,0.2,1])
-                    pixels[x,y]=c*0.7
+                        c=ti.Vector([1,0.0,1])
+                    pixels[x,y]=c
                 else:
                     pixels[x,y]=particleColor #set pixel color
     for i in range(majorNCurrent[None]):
@@ -632,12 +642,27 @@ createLabel.grid(row=16,column=0)
 camScale.set(100)
 createScale.set(100)
 
+rScale=tk.Scale(root,from_=1,to=1000,orient='horizontal')
+rScale.grid(row=17,column=1,columnspan=3)
+rLabel=tk.Label(root,text="Rainbow Speed Mult")
+rLabel.grid(row=17,column=0)
+
+rPScale=tk.Scale(root,from_=100,to=500,orient='horizontal')
+rPScale.grid(row=18,column=1,columnspan=3)
+rPLabel=tk.Label(root,text="Rainbow Scale")
+rPLabel.grid(row=18,column=0)
+
+rScale.set(100)
+rPScale.set(200)
+
 while window.running:
     root.update_idletasks()
     root.update()
 
     camSense=camScale.get()
     createSense=createScale.get() #*1e20 #for irl masses
+    rSpMult[None]=rScale.get()/100
+    rParam[None]=rPScale.get()/100
 
     window.get_events()
     #ui, pausing and creation
@@ -750,11 +775,11 @@ while window.running:
 
     #draw
     canvas.set_image(pixels)
-    canvas.circles(vertices,radius=0.0005,per_vertex_color=trajColors)
+    canvas.circles(vertices,radius=0.001,per_vertex_color=trajColors)
     canvas.circles(drawMajorPos,1,per_vertex_radius=drawMajorRadii,per_vertex_color=majorColors)
     if LMB and colorN!=(0,0,0): #draw created body
         canvas.circles(drawPosN,radius=radN*zoom,color=colorN)
-        canvas.circles(trajN,radius=0.0005,color=colorN)
+        canvas.circles(trajN,radius=0.001,color=colorN)
     
     #info boxes
     with gui.sub_window("Creation Menu", 0.2,0, 0.1, 0.12):
