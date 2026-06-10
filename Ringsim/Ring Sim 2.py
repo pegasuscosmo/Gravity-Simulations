@@ -25,11 +25,7 @@ gui = window.get_gui()
 particleN=1000000
 majorN=100 #maximum
 
-#default
-innerRad=100
-outerRad=500
-
-rings=[
+rings=[ #default
     #inner  outer   % of particles
     [100,   500,    50],
     [200,   400,    50]
@@ -42,7 +38,8 @@ bodies=[ #default
 
 #colors
 particleColor=ti.Vector([0.4,0.4,0.4])
-brightCutoff=0.3 #brightness cutoff for major bodies
+rainbowMode=False
+brightCutoff=0.2 #brightness cutoff for major bodies
 
 #fields
 #   particles
@@ -75,7 +72,7 @@ massN=0 #mass
 radN=0 #radius
 colorN=(0,0,0) #color
 trajN=ti.Vector.field(2,dtype=ti.f32,shape=steps) #projected position
-tau=2*3.14159
+tau=2*3.14159265359
 
 def listToText(l):
     s=""
@@ -100,7 +97,6 @@ def initColors():
 
         majorColors[j]=ti.Vector([r,g,b]) #set random color
 initColors() #only called once
-majorColors[0]=ti.Vector([1,1,1])
 
 @ti.kernel
 def initTI():
@@ -138,7 +134,6 @@ def initTI():
         for i in range(majorNCurrent[None]):
             trajColors[s*majorN+i]=majorColors[i] #set trajectory colors
 
-
 #tkinter UI and functions
 def submit(idx=-1):
     pos=posEntry.get()
@@ -170,7 +165,6 @@ def submit(idx=-1):
         if i!=".":
             t+=i
     if not t.isnumeric() and (idx==-1 or t!=""):
-        print(rad)
         errorLabel.config(text=f"Invalid Radius {rad}")
         return
     if pos!="":
@@ -201,7 +195,7 @@ def submit(idx=-1):
                 t2=""
             elif i!=" ":
                 t+=i
-                if i!="-":
+                if i!="-" and i!=".":
                     t2+=i
         yv=t
         yv2=t2
@@ -274,11 +268,19 @@ def submitRing(idx=-1):
             errorLabel.config(text="Nothing to Append")
             return
         l=[float(inn),float(out),float(per)]
+        if l[0]>l[1]*0.965:
+            errorLabel.config(text="Ring too Thin")
+            return
         errorLabel.config(text=" ")
         rings.append(l)
     if inn!="":
+        if rings[idx][1]*0.965<float(inn):
+            errorLabel.config(text="Ring too Thin")
+            return
         rings[idx][0]=float(inn)
     if out!="":
+        if rings[idx][0]/0.965>float(out):
+            errorLabel.config(text="Ring too Thin")
         rings[idx][1]=float(out)
     if per!="":
         rings[idx][2]=float(per)
@@ -393,7 +395,6 @@ def init():
     oRtemp=outerEntry.get() #same as inner radius
     if oRtemp!="":
         outerRad=float(oRtemp)
-
     if bodies==[] or rings==[]: #do not generate on empty major or rings list
         errorLabel.config(text="Nothing to Generate")
         return
@@ -402,6 +403,7 @@ def init():
         return
     totalPercent=0
     ringN[None]=len(rings)
+    ringVals.fill(0)
     for i in range(len(rings)): #add ring values to taichi field
         r=rings[i]
         totalPercent+=r[2]
@@ -414,15 +416,14 @@ def init():
         if r[0]>r[1]:
             errorLabel.config(text=f"Ring {i}'s Inner Radius is Larger than Outer Radius")
             return
-        if r[0]+10>r[1]:
+        if r[0]>r[1]*0.965:
             errorLabel.config(text=f"Ring {i} Too Thin")
             return
         ringVals[i]=ti.Vector([r[0],r[1],r[2]/100])
-    
     errorLabel.config(text="") #reset error text in tkinter if works
     #reset vars and fields
     pixels.fill(0); drawMajorPos.fill(0); drawMajorRadii.fill(0)
-    body=False; LMB=False; paused=False
+    body=True; LMB=False
     drawPosN[0]=ti.Vector([0.0,0.0])
     posN=ti.Vector([0.0,0.0]); velN=ti.Vector([0.0,0.0])
     massN=0; radN=0; colorN=(0,0,0)
@@ -431,6 +432,7 @@ def init():
     majorRadii.fill(0); trajectories.fill(0)
     vertices.fill(0); trajN.fill(0)
     majorNCurrent[None]=len(bodies)
+    posField.fill(0); velField.fill(0)
     zoom=0.95
     offset=ti.Vector([0.0,0.0])
     # init for majors
@@ -486,7 +488,7 @@ pixels=ti.Vector.field(3,dtype=ti.f32,shape=(sW,sH))
 drawMajorPos=ti.Vector.field(2,dtype=ti.f32,shape=majorN)
 drawMajorRadii=ti.field(dtype=ti.f32,shape=majorN)
 @ti.kernel
-def renderImg(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32)):
+def renderImg(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32), rainbowMode: ti.int32):
     center=ti.Vector([sW/2,sH/2])
     cam=ti.Vector([off[0]*sW,off[1]*sH])
     for i in range(particleN):
@@ -496,7 +498,25 @@ def renderImg(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32)):
             x=ti.cast(drawPos[0],ti.int64)
             y=ti.cast(drawPos[1],ti.int64)
             if x>0 and y>0 and x<sW and y<sH:
-                pixels[x,y]=particleColor #set pixel color
+                if rainbowMode==1:
+                    c=ti.Vector([0,0,0])
+                    if x<sW/7:
+                        c=ti.Vector([1,0.2,0.2])
+                    elif x<2*sW/7:
+                        c=ti.Vector([1,0.6,0.2])
+                    elif x<3*sW/7:
+                        c=ti.Vector([1,1,0.2])
+                    elif x<4*sW/7:
+                        c=ti.Vector([0.2,1,0.2])
+                    elif x<5*sW/7:
+                        c=ti.Vector([0.2,0.3,1])
+                    elif x<6*sW/7:
+                        c=ti.Vector([1,0.2,1])
+                    else:
+                        c=ti.Vector([1,0.2,1])
+                    pixels[x,y]=c*0.7
+                else:
+                    pixels[x,y]=particleColor #set pixel color
     for i in range(majorNCurrent[None]):
         p=(majorPosField[i]-center+cam)*zoom+center #convert world space to screen space
         drawMajorPos[i]=ti.Vector([p[0]/sW,p[1]/sH]) #set vector in field
@@ -540,8 +560,10 @@ def plotTrajectories(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32)):
             vertices[s*majorN+i]=p
 
 @ti.kernel
-def addBodyN(pos: ti.types.vector(2,dtype=ti.f32), vel: ti.types.vector(2,dtype=ti.f32), 
-             mass: ti.f32, rad: ti.f32, color: ti.types.vector(3,dtype=ti.f32), 
+def addBodyN(pos: ti.types.vector(2,dtype=ti.f32), 
+             vel: ti.types.vector(2,dtype=ti.f32), 
+             mass: ti.f32, rad: ti.f32, 
+             color: ti.types.vector(3,dtype=ti.f32), 
              off: ti.types.vector(2,dtype=ti.f32), zoom: ti.f32):
     q=majorNCurrent[None]
     center=ti.Vector([sW/2,sH/2])
@@ -558,7 +580,9 @@ def addBodyN(pos: ti.types.vector(2,dtype=ti.f32), vel: ti.types.vector(2,dtype=
     majorNCurrent[None]+=1
 
 @ti.kernel
-def newBodyTrajectory(pos: ti.types.vector(2,dtype=ti.f32), vel: ti.types.vector(2,dtype=ti.f32), off: ti.types.vector(2,dtype=ti.f32), zoom: ti.f32):
+def newBodyTrajectory(pos: ti.types.vector(2,dtype=ti.f32), 
+                      vel: ti.types.vector(2,dtype=ti.f32), 
+                      off: ti.types.vector(2,dtype=ti.f32), zoom: ti.f32):
     center=ti.Vector([sW/2,sH/2])
     cam=ti.Vector([off[0]*sW,off[1]*sH])
     pixelPos = ti.Vector([pos[0]*sW, pos[1]*sH]) #convert to world space
@@ -588,12 +612,12 @@ zoom=0.95
 moveS=0.01
 offset=ti.Vector([0.0,0.0])
 #booleans for body creation and pausing
-body=False
+body=True
 LMB=False
 paused=False
 esc=False
 
-sqrt2=1.414
+sqrt2=1.41421356
 init()
 
 #Sensitivity scales and labels
@@ -608,7 +632,6 @@ createLabel.grid(row=16,column=0)
 camScale.set(100)
 createScale.set(100)
 
-
 while window.running:
     root.update_idletasks()
     root.update()
@@ -618,7 +641,7 @@ while window.running:
 
     window.get_events()
     #ui, pausing and creation
-    with gui.sub_window("Toggles", 0.,0, 0.1, 0.1):
+    with gui.sub_window("Toggles", 0.,0, 0.1, 0.12):
         if not paused:
             if gui.button("Pause"):
                 esc=True
@@ -634,6 +657,14 @@ while window.running:
         else:
             if gui.button("Enable Creation"):
                 body=True
+                esc=True
+        if not rainbowMode:
+            if gui.button("Rainbow On"):
+                esc=True
+                rainbowMode=True
+        else:
+            if gui.button("Rainbow Off"):
+                rainbowMode=False
                 esc=True
 
     #camera movement
@@ -655,7 +686,6 @@ while window.running:
         createScale.set(createSense+10)
     if window.is_pressed(ti.ui.DOWN):
         createScale.set(createSense-10)
-
     if majorNCurrent[None]>=majorN and body:
         body=False #disable if major cap reached
     offset.normalized() #set speed of camera to 1
@@ -664,9 +694,12 @@ while window.running:
         #physics step if not paused
         stepParticles()
         stepMajors()
-
+    #render
     pixels.fill(0) #clear render
-    renderImg(zoom,offset)
+    r=0
+    if rainbowMode:
+        r=1
+    renderImg(zoom,offset,r)
     plotTrajectories(zoom, offset)
 
     #body creation logic
@@ -724,12 +757,17 @@ while window.running:
         canvas.circles(trajN,radius=0.0005,color=colorN)
     
     #info boxes
-    with gui.sub_window("Creation Menu", 0.2,0, 0.1, 0.1):
-        gui.text(f"Mass: {massN:.1f}")
-        gui.text(f"Radius: {radN:.4f}")
-        gui.text(f"Velocity: {velN.norm():.2f}")
-    with gui.sub_window("Controls: ", 0.1,0, 0.1, 0.1):
-        gui.text("Cam movement: WASD\nZoom: IK\nCreation: hold LMB\n- Mass: TG\n- Radius: HF")
+    with gui.sub_window("Creation Menu", 0.2,0, 0.1, 0.12):
+        gui.text(f"Mass: {massN}")
+        gui.text(f"Radius: {radN}")
+        gui.text(f"Velocity: {velN.norm()}")
+    with gui.sub_window("Controls: ", 0.1,0, 0.1, 0.12):
+        gui.text(
+            "Cam movement: WASD\n" \
+            "Zoom: IK\n" \
+            "Creation: hold LMB\n" \
+            "- Mass: TG\n" \
+            "- Radius: HF")
     
     #print(window.get_window_shape()) #use to find window size
     #update display
