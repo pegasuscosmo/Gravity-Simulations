@@ -489,7 +489,7 @@ def stepMajors():
 @ti.func
 def rainFunc(x: ti.int32) -> ti.f32:
     x=ti.cast(x,ti.f32)
-    y=(x+1)**rParam[None] /15
+    y=(x+1)**2 /rParam[None]
     return y
 
 
@@ -642,18 +642,18 @@ createLabel.grid(row=16,column=0)
 camScale.set(100)
 createScale.set(100)
 
-rScale=tk.Scale(root,from_=1,to=1000,orient='horizontal')
+rScale=tk.Scale(root,from_=1,to=10000,orient='horizontal')
 rScale.grid(row=17,column=1,columnspan=3)
 rLabel=tk.Label(root,text="Rainbow Speed Mult")
 rLabel.grid(row=17,column=0)
 
-rPScale=tk.Scale(root,from_=100,to=500,orient='horizontal')
+rPScale=tk.Scale(root,from_=500,to=2500,orient='horizontal')
 rPScale.grid(row=18,column=1,columnspan=3)
 rPLabel=tk.Label(root,text="Rainbow Scale")
 rPLabel.grid(row=18,column=0)
 
-rScale.set(100)
-rPScale.set(200)
+rScale.set(1000)
+rPScale.set(1500)
 
 while window.running:
     root.update_idletasks()
@@ -661,7 +661,7 @@ while window.running:
 
     camSense=camScale.get()
     createSense=createScale.get() #*1e20 #for irl masses
-    rSpMult[None]=rScale.get()/100
+    rSpMult[None]=rScale.get()/1000
     rParam[None]=rPScale.get()/100
 
     window.get_events()
