@@ -1,0 +1,131 @@
+import taichi as ti
+ti.reset()
+ti.init(arch=ti.gpu,default_fp=ti.f32,kernel_profiler=True)
+import random
+import math
+
+n=1000000
+codes=ti.field(dtype=ti.uint64,shape=n)
+bitLength=4
+passes=64//bitLength
+l=2**bitLength
+
+
+
+sums=ti.field(dtype=ti.int32,shape=l)
+sums2=ti.field(dtype=ti.int32,shape=l)
+prefixes=ti.field(dtype=ti.int32,shape=l)
+bitString=ti.field(dtype=ti.uint64,shape=n)
+sortedCodes=ti.field(dtype=ti.u64,shape=n)
+
+blockSize=64
+blockNum=math.ceil(n/blockSize)
+localRank=ti.field(dtype=ti.int32,shape=n)
+blockCounts=ti.field(dtype=ti.int32,shape=(blockNum,l))
+blockCounts2=ti.field(dtype=ti.int32,shape=(blockNum,l))
+blockPrefixes=ti.field(dtype=ti.int32,shape=(blockNum,l))
+logBlockNum=math.ceil(math.log2(blockNum))
+
+
+
+@ti.kernel
+def reset():
+    ti.loop_config(serialize=False)
+    for i in range(l):
+        sums[i]=0
+    ti.loop_config(serialize=False)
+    for block, b in ti.ndrange(blockNum, l):
+        blockCounts[block, b] = 0
+@ti.kernel
+def maskCodes(p: ti.int32):
+    mask=ti.uint64(0)
+    mask=2**((p+1)*bitLength) - 2**(p*bitLength) #self derived :D
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        maskedCode=(codes[i]&mask) >> bitLength*p
+        ti.atomic_add(sums[maskedCode],1)
+        bitString[i]=maskedCode
+@ti.kernel
+def findBlockAndRank():
+    for i in range(n):
+        block=i//blockSize
+        ti.atomic_add(blockCounts[block,bitString[i]],1)
+        blockStartIdx=block*blockSize
+        localIdx=i-blockStartIdx
+        rank=0
+        for j in range(localIdx):
+            k=j+blockStartIdx
+            if bitString[k]==bitString[i]:
+                rank+=1
+        localRank[i]=rank
+def prefixSumBlocks():
+    for w in range(logBlockNum):
+        copyBlockCounts()
+        sumBlockCounts(w)
+    getBlockPrefixes()
+@ti.kernel
+def copyBlockCounts():
+        for i,b in ti.ndrange(blockNum,l):
+            blockCounts2[i,b]=blockCounts[i,b]
+@ti.kernel
+def sumBlockCounts(w:ti.int32):
+    d=2**w
+    for i in range(blockNum):
+        if i>=d:
+            for b in range(l):
+                blockCounts[i,b]+=blockCounts2[i-d,b]
+    ti.loop_config(serialize=False)
+@ti.kernel
+def getBlockPrefixes():
+    for b in range(l):
+        blockPrefixes[0,b]=0
+    ti.loop_config(serialize=False)
+    for j in range(blockNum-1):
+        i=j+1
+        for b in range(l):
+            blockPrefixes[i,b]=blockCounts[j,b]
+@ti.kernel
+def prefixSumCounts():
+    ti.loop_config(serialize=True)
+    for w in range(bitLength):
+        d=2**w
+        for i in range(l):
+            sums2[i]=sums[i]
+        for i in range(l):
+            if i>=d:
+                sums[i]+=sums2[i-d]
+    prefixes[0]=0
+    ti.loop_config(serialize=False)
+    for j in range(l-1):
+        i=j+1
+        prefixes[i]=sums[j]
+@ti.kernel
+def scatter():
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        maskedCode=bitString[i]
+        block=i//blockSize
+        idx=prefixes[maskedCode]+blockPrefixes[block,maskedCode]+localRank[i]
+        sortedCodes[idx]=codes[i]
+
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        codes[i]=sortedCodes[i]
+
+def radixSortController():
+    for p in range(passes):
+        reset()
+        maskCodes(p)
+        findBlockAndRank()
+        prefixSumBlocks()
+        prefixSumCounts()
+        scatter()
+
+for i in range(10):
+    #for o in range(n):
+    #    codes[o]=random.randint(0,n)
+    radixSortController()
+    print(i)
+
+ti.sync()
+ti.profiler.print_kernel_profiler_info()
