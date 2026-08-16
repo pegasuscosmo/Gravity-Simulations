@@ -6,6 +6,7 @@ import math
 
 n=1000000
 codes=ti.field(dtype=ti.uint64,shape=n)
+
 bitLength=4
 passes=64//bitLength
 l=2**bitLength
@@ -15,7 +16,7 @@ l=2**bitLength
 sums=ti.field(dtype=ti.int32,shape=l)
 sums2=ti.field(dtype=ti.int32,shape=l)
 prefixes=ti.field(dtype=ti.int32,shape=l)
-bitString=ti.field(dtype=ti.uint64,shape=n)
+bitString=ti.field(dtype=ti.int32,shape=n)
 sortedCodes=ti.field(dtype=ti.u64,shape=n)
 
 blockSize=64
@@ -26,27 +27,23 @@ blockCounts2=ti.field(dtype=ti.int32,shape=(blockNum,l))
 blockPrefixes=ti.field(dtype=ti.int32,shape=(blockNum,l))
 logBlockNum=math.ceil(math.log2(blockNum))
 
+groupSize=256
+groupNum=math.ceil(blockNum/groupSize)
 
 
 @ti.kernel
-def reset():
+def radixPassPart1(p: ti.int32):
     ti.loop_config(serialize=False)
     for i in range(l):
         sums[i]=0
     ti.loop_config(serialize=False)
     for block, b in ti.ndrange(blockNum, l):
         blockCounts[block, b] = 0
-@ti.kernel
-def maskCodes(p: ti.int32):
-    mask=ti.uint64(0)
-    mask=2**((p+1)*bitLength) - 2**(p*bitLength) #self derived :D
     ti.loop_config(serialize=False)
     for i in range(n):
-        maskedCode=(codes[i]&mask) >> bitLength*p
+        maskedCode = ti.cast((codeField[i] >> p*bitLength) & ti.u64(l - 1), ti.i32)
         ti.atomic_add(sums[maskedCode],1)
         bitString[i]=maskedCode
-@ti.kernel
-def findBlockAndRank():
     for i in range(n):
         block=i//blockSize
         ti.atomic_add(blockCounts[block,bitString[i]],1)
@@ -60,21 +57,19 @@ def findBlockAndRank():
         localRank[i]=rank
 def prefixSumBlocks():
     for w in range(logBlockNum):
-        copyBlockCounts()
-        sumBlockCounts(w)
+        d=1<<w
+        sumBlockCounts(d)
     getBlockPrefixes()
+
 @ti.kernel
-def copyBlockCounts():
-        for i,b in ti.ndrange(blockNum,l):
-            blockCounts2[i,b]=blockCounts[i,b]
-@ti.kernel
-def sumBlockCounts(w:ti.int32):
-    d=2**w
+def sumBlockCounts(d:ti.int32):
+    for i,b in ti.ndrange(blockNum,l):
+        blockCounts2[i,b]=blockCounts[i,b]
     for i in range(blockNum):
         if i>=d:
             for b in range(l):
                 blockCounts[i,b]+=blockCounts2[i-d,b]
-    ti.loop_config(serialize=False)
+
 @ti.kernel
 def getBlockPrefixes():
     for b in range(l):
@@ -106,26 +101,18 @@ def scatter():
         maskedCode=bitString[i]
         block=i//blockSize
         idx=prefixes[maskedCode]+blockPrefixes[block,maskedCode]+localRank[i]
-        sortedCodes[idx]=codes[i]
+        sortedCodes[idx]=codeField[i]
 
     ti.loop_config(serialize=False)
     for i in range(n):
-        codes[i]=sortedCodes[i]
+        codeField[i]=sortedCodes[i]
 
 def radixSortController():
     for p in range(passes):
-        reset()
-        maskCodes(p)
-        findBlockAndRank()
+        radixPassPart1(p)
         prefixSumBlocks()
         prefixSumCounts()
         scatter()
-
-for i in range(10):
-    #for o in range(n):
-    #    codes[o]=random.randint(0,n)
-    radixSortController()
-    print(i)
 
 ti.sync()
 ti.profiler.print_kernel_profiler_info()
