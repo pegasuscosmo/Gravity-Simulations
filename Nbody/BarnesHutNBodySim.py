@@ -1,11 +1,13 @@
 import taichi as ti
 from taichi.algorithms import parallel_sort
 ti.reset()
-ti.init(arch=ti.cpu,default_fp=ti.f32)
+ti.init(arch=ti.gpu,default_fp=ti.f32,kernel_profiler=True)
+import math
+import time
 
 #simulation parameters
 #   particles
-n=100000
+n=500000
 m=10
 #   physics
 G=1
@@ -139,7 +141,6 @@ chunkNum=64//chunkBits
 codeField=ti.field(dtype=ti.u64,shape=n)
 sortedCodeField=ti.field(dtype=ti.u64,shape=n)
 pointerField=ti.field(dtype=ti.int32,shape=n)
-sortedPointerField=ti.field(dtype=ti.int32,shape=n)
 
 #chatgpt
 @ti.func
@@ -188,6 +189,115 @@ def createCodes(): #create morton codes
 # which is a space filling curve that preserves locality, hence why morton codes themselves also preserve locality
 # this implicitly creates a quadtree, which is necessary for Barnes Hut
 
+bitLength=4
+passes=64//bitLength
+l=2**bitLength
+
+
+
+sums=ti.field(dtype=ti.int32,shape=l)
+sums2=ti.field(dtype=ti.int32,shape=l)
+prefixes=ti.field(dtype=ti.int32,shape=l)
+bitString=ti.field(dtype=ti.int32,shape=n)
+sortedCodes=ti.field(dtype=ti.u64,shape=n)
+sortedPointerField=ti.field(dtype=ti.int32,shape=n)
+
+blockSize=64
+blockNum=math.ceil(n/blockSize)
+localRank=ti.field(dtype=ti.int32,shape=n)
+blockCounts=ti.field(dtype=ti.int32,shape=(blockNum,l))
+blockCounts2=ti.field(dtype=ti.int32,shape=(blockNum,l))
+blockPrefixes=ti.field(dtype=ti.int32,shape=(blockNum,l))
+logBlockNum=math.ceil(math.log2(blockNum))
+
+groupSize=256
+groupNum=math.ceil(blockNum/groupSize)
+
+
+@ti.kernel
+def radixPassPart1(p: ti.int32):
+    ti.loop_config(serialize=False)
+    for i in range(l):
+        sums[i]=0
+    ti.loop_config(serialize=False)
+    for block, b in ti.ndrange(blockNum, l):
+        blockCounts[block, b] = 0
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        maskedCode = ti.cast((codeField[i] >> p*bitLength) & ti.u64(l - 1), ti.i32)
+        ti.atomic_add(sums[maskedCode],1)
+        bitString[i]=maskedCode
+    for i in range(n):
+        block=i//blockSize
+        ti.atomic_add(blockCounts[block,bitString[i]],1)
+        blockStartIdx=block*blockSize
+        localIdx=i-blockStartIdx
+        rank=0
+        for j in range(localIdx):
+            k=j+blockStartIdx
+            if bitString[k]==bitString[i]:
+                rank+=1
+        localRank[i]=rank
+def prefixSumBlocks():
+    for w in range(logBlockNum):
+        d=1<<w
+        sumBlockCounts(d)
+    getBlockPrefixes()
+
+@ti.kernel
+def sumBlockCounts(d:ti.int32):
+    for i,b in ti.ndrange(blockNum,l):
+        blockCounts2[i,b]=blockCounts[i,b]
+    for i in range(blockNum):
+        if i>=d:
+            for b in range(l):
+                blockCounts[i,b]+=blockCounts2[i-d,b]
+
+@ti.kernel
+def getBlockPrefixes():
+    for b in range(l):
+        blockPrefixes[0,b]=0
+    ti.loop_config(serialize=False)
+    for j in range(blockNum-1):
+        i=j+1
+        for b in range(l):
+            blockPrefixes[i,b]=blockCounts[j,b]
+@ti.kernel
+def prefixSumCounts():
+    ti.loop_config(serialize=True)
+    for w in range(bitLength):
+        d=2**w
+        for i in range(l):
+            sums2[i]=sums[i]
+        for i in range(l):
+            if i>=d:
+                sums[i]+=sums2[i-d]
+    prefixes[0]=0
+    ti.loop_config(serialize=False)
+    for j in range(l-1):
+        i=j+1
+        prefixes[i]=sums[j]
+@ti.kernel
+def scatter():
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        maskedCode=bitString[i]
+        block=i//blockSize
+        idx=prefixes[maskedCode]+blockPrefixes[block,maskedCode]+localRank[i]
+        sortedCodes[idx]=codeField[i]
+        sortedPointerField[idx]=pointerField[i]
+
+    ti.loop_config(serialize=False)
+    for i in range(n):
+        codeField[i]=sortedCodes[i]
+        pointerField[i]=sortedPointerField[i]
+
+def radixSortController():
+    for p in range(passes):
+        radixPassPart1(p)
+        prefixSumBlocks()
+        prefixSumCounts()
+        scatter()
 
 @ti.func
 def binarySearch(L: ti.int32,R: ti.int32,k: ti.int32) -> ti.int32: #find split index
@@ -263,6 +373,8 @@ nodeCOMField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN)
 nodeABoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #min x,y
 nodeBBoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #max x,y
 
+reversePointerField=ti.field(dtype=ti.int32,shape=n)
+
 @ti.kernel
 def createTree(): #create the binary LVBH tree
     for i in range(2*n-1):#reset fields
@@ -273,6 +385,7 @@ def createTree(): #create the binary LVBH tree
         nodeBBoundField[i]=posField[sortedPointerField[i]]
         nodeCOMField[i]=posField[sortedPointerField[i]]
         nodeMassField[i]=m
+        reversePointerField[sortedPointerField[i]]=i
     for i in range(n-1):
         #taichi adapted chatgpt code (literally magic)
         dp=findK(i,i+1)
@@ -447,7 +560,7 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
                         accelVec+=accel*d/r
         velField[sortedPointerField[i]]+=accelVec*dt
     for i in range(n):    
-        posField[sortedPointerField[i]]+=velField[sortedPointerField[i]]*dt/2
+        posField[i]+=velField[i]*dt/2
 
 #quick explanation time again!
 # each particle has their own stack, which starts with the root node
@@ -516,10 +629,13 @@ def drawDensity(zoomInv: ti.f32):
             imgField[i1,i2]=ti.Vector([0,0,0])
 
 def sim():
+    f=0
+    totalT=0
     zoom=1.2
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
     while window.running:
+        s=time.time()
         window.get_events()
         #zoom
         if window.is_pressed('i'):
@@ -538,8 +654,7 @@ def sim():
         zoomInv=1/zoom
         #physics logic
         createCodes()
-        parallel_sort(codeField,pointerField)
-        sortedPointerField.copy_from(pointerField)
+        radixSortController()
         createTree()
         massBoundAllocateController()
         forceAccumulate()
@@ -549,6 +664,14 @@ def sim():
         drawDensity(zoomInv)
         canvas.set_image(imgField)
         window.show()
+        ti.sync()
+        e=time.time()
+        t=e-s
+        totalT+=t
+        print(f, t, totalT)
+        f+=1
 
 init(preset,k,k2,k3)
 sim()
+
+ti.profiler.print_kernel_profiler_info()
