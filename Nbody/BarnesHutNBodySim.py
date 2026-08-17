@@ -46,7 +46,6 @@ c2=ti.Vector([0.7,0.4,0.6]) #mid density
 c3=ti.Vector([0.3,0.2,0.7])#low density
 midC=0.3
 
-
 #fields
 posField=ti.Vector.field(2,dtype=ti.f32,shape=n) #x,y
 velField=ti.Vector.field(2,dtype=ti.f32,shape=n) #xv,yv
