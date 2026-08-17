@@ -39,6 +39,7 @@ Barnes Hut N Body (Optimized)
 - Similar to the first N Body sim, but optimized for parallelism, and uses more efficient tree construction/traversal
 - Color/brightness change by density
 - standard velocity verlet integration
+- uses custom radix sort for performance improvement on GPU
 - Controls:
   - WASD for movement
   - I/K to zoom in/out
