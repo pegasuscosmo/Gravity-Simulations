@@ -7,19 +7,20 @@ import time
 
 #simulation parameters
 #   particles
-n=500000
-m=10
+n=809551
+totalM=5000000
+m=totalM/n
 #   physics
 G=1
 dt=0.001
 theta=1 #acceptance angle, larger -> more performance, less accuracy
-eps=1e-1 #smoothing, recommended >1e-1
+eps=1e0 #smoothing
 #   generation
-preset=2
+preset=3
 k=1
-k2=0
-k3=0.7
-spinMult=0.85
+k2=-1
+k3=0.2
+spinMult=2
 drawScale=100
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
@@ -32,7 +33,8 @@ drawScale=100
 
 #   visual
 #       window
-windowSize=1000
+windowW=1920
+windowH=1000
 #       colors
 pc=0.1 #brightness sensitivity
 pb=3 #bloom
@@ -50,7 +52,7 @@ posField=ti.Vector.field(2,dtype=ti.f32,shape=n) #x,y
 velField=ti.Vector.field(2,dtype=ti.f32,shape=n) #xv,yv
 
 drawScaleInv=1/drawScale
-
+o=ti.Vector([drawScale*500,drawScale*500])
 @ti.kernel
 def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
     if preset==0: #square init
@@ -67,7 +69,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
             x=0.0
             y=0.0
             d=ti.Vector([0.0,0.0])
-            while r>drawScale/2 and r>0:
+            while r>drawScale/2 or r<1e-4:
                 x=ti.random()*drawScale
                 y=ti.random()*drawScale
                 d=ti.Vector([x,y])-ti.Vector([drawScale/2,drawScale/2])
@@ -75,7 +77,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
             posField[i]=ti.Vector([x,y])
             vx=(ti.random()-0.5)*k
             vy=(ti.random()-0.5)*k
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*m*n*r/(drawScale/2)**2)*spinMult + ti.Vector([vx,vy])  - k2*(posField[i]-ti.Vector([drawScale/2,drawScale/2]))
+            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM*r/(drawScale/2)**2)*spinMult + ti.Vector([vx,vy])  - k2*(posField[i]-ti.Vector([drawScale/2,drawScale/2]))
     elif preset==2: #galaxy init
         for i in range(n):
             g=0
@@ -84,7 +86,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
             x=0.0
             y=0.0
             d=ti.Vector([0.0,0.0])
-            while r>drawScale/2 and r>0:
+            while r>drawScale/2 or r<1e-4:
                 rad=ti.random()**k *drawScale/2
                 theta=ti.random()*2*ti.math.pi
                 theta+=1+0.5*ti.sin(k2*theta+(ti.random()-0.5)*ti.math.pi)
@@ -94,9 +96,9 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
                 r=d.norm()
             posField[i]=ti.Vector([x,y])
             if r>drawScale/40:
-                velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*m*n/2.0*r/(drawScale/2.0)**2)*spinMult * ti.pow(drawScale/2/r,k3) * ti.pow(2,r/(drawScale/2))
+                velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2.0*r/(drawScale/2.0)**2)*spinMult * ti.pow(drawScale/2/r,k3) * ti.pow(2,r/(drawScale/2))
             else:
-                velField[i]=ti.Vector([ti.random()-0.5,ti.random()-0.5])*m*n*G/10000
+                velField[i]=ti.Vector([ti.random()-0.5,ti.random()-0.5])*totalM*G/10000
     elif preset==3: #galaxy merger init
         for i in range(n):
             g=k3
@@ -107,7 +109,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
             x=0.0
             y=0.0
             d=ti.Vector([0.0,0.0])
-            while r>drawScale/4 and r>0:
+            while r>drawScale/4 or r<1e-4:
                 rad=ti.random()**k *drawScale/4
                 theta=ti.random()*2*ti.math.pi
                 theta+=1+0.5*ti.sin(k2*theta+(ti.random()-0.5)*ti.math.pi)
@@ -116,8 +118,9 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
                 d=ti.Vector([x,y])-gcenter
                 r=d.norm()
             posField[i]=ti.Vector([x,y])
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*m*n/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,g*0])
-            
+            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,g*0])
+    for i in range(n):
+        posField[i]+=o
 
 
 
@@ -149,27 +152,25 @@ def maskBits(code,k):
     return ti.cast((code >> k) & mask,ti.uint64)
 #end cite
 
-scale=2**31-1
+scale=1<<30
 
 @ti.kernel
 def createCodes(): #create morton codes   
-    maxPosX=0
-    maxPosY=0
+    maxPosX=0.0
+    maxPosY=0.0
     for i in range(n): #find max positions
         ti.atomic_max(maxPosX,posField[i][0])
         ti.atomic_max(maxPosY,posField[i][1])
-    maxScaleX=scale/maxPosX #create scaling factor to go from f32->int32 while 
-    maxScaleY=scale/maxPosY #maximizing how many bits are used in the resulting i32
+    maxScaleX=ti.cast(scale,ti.f32)/maxPosX #create scaling factor to go from f32->int32 while 
+    maxScaleY=ti.cast(scale,ti.f32)/maxPosY #maximizing how many bits are used in the resulting i32
     for i in range(n):
-        x=posField[i][0]
+        x=posField[i][0] #floats
         y=posField[i][1]
-        x*=maxScaleX #scale positions to int32
-        y*=maxScaleY
-        x=ti.cast(x,ti.int32) #cast to i32 first to avoid f32->u64 cast bugginess
-        y=ti.cast(y,ti.int32)
-        x=ti.cast(x,ti.uint64) #cast to u64 for morton coding
-        y=ti.cast(y,ti.uint64)
-        codeField[i]=(splitBy1(x)|(splitBy1(y)<<1)) #create morton code
+        xint=ti.cast(x*maxScaleX,ti.int32) #scale positions to int32
+        yint=ti.cast(y*maxScaleY,ti.int32) #cast to i32 first to avoid f32->u64 cast bugginess
+        xu=ti.cast(xint,ti.uint64) #cast to u64 for morton coding
+        yu=ti.cast(yint,ti.uint64)
+        codeField[i]=(splitBy1(xu)|(splitBy1(yu)<<1)) #create morton code
         pointerField[i]=i
 
 # morton coding quick explanation
@@ -572,20 +573,25 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
 # This in effect creates a depth first search for nodes that satisfy s/d<theta
 
 
-window = ti.ui.Window("Barnes Hut Sim", (windowSize, windowSize))
+window = ti.ui.Window("Barnes Hut Sim", (windowW, windowH),pos=(0,40))
 canvas = window.get_canvas()
 
 posDraw = ti.Vector.field(2, dtype=ti.f32, shape=n)
 
-pixelField=ti.field(dtype=ti.f32,shape=(windowSize,windowSize))
-imgField=ti.Vector.field(3,dtype=ti.f32,shape=(windowSize,windowSize))
+pixelField=ti.field(dtype=ti.f32,shape=(windowW,windowH))
+imgField=ti.Vector.field(3,dtype=ti.f32,shape=(windowW,windowH))
 
+aspectRatio=windowW/windowH
 @ti.kernel
-def to_screen(scale: ti.f32, zoom: ti.f32, offset: ti.types.vector(2,ti.f32)):
+def to_screen(zoom: ti.f32, offset: ti.types.vector(2,ti.f32)):
     for i in range(n):
-        p=posField[i]-ti.Vector([1/scale/2,1/scale/2])+offset
-        scaleP=p*scale/zoom
-        posDraw[i]=(scaleP+ti.Vector([0.5,0.5]))*windowSize
+        p=posField[i]-ti.Vector([drawScale/2,drawScale/2])+offset
+        scaleP=p/drawScale/zoom
+        scaleP[0]/=aspectRatio
+        p1=(scaleP+ti.Vector([0.5,0.5]))
+        p1[0]*=windowW
+        p1[1]*=windowH
+        posDraw[i]=p1
 #taichi windows use [0,1] as their coordinates, so to draw them, positions must be scaled first
 
 @ti.kernel
@@ -594,22 +600,22 @@ def drawDensity(zoomInv: ti.f32):
         pos=posDraw[i]
         x=ti.cast(pos[0],ti.int32)
         y=ti.cast(pos[1],ti.int32)
-        if x<windowSize and x>0 and y>0 and y<windowSize:
+        if x<windowW and x>0 and y>0 and y<windowH:
             a=1
             ti.atomic_add(pixelField[x,y],a)
-            if x+1<windowSize:
+            if x+1<windowW:
                 ti.atomic_add(pixelField[x+1,y],0.25*a)
-                if y+1<windowSize:
+                if y+1<windowH:
                     ti.atomic_add(pixelField[x+1,y+1],0.05*a)
                 if y-1>0:
                     ti.atomic_add(pixelField[x+1,y-1],0.05*a)
             if x-1>0:
                 ti.atomic_add(pixelField[x-1,y],0.25*a)
-                if y+1<windowSize:
+                if y+1<windowH:
                     ti.atomic_add(pixelField[x-1,y+1],0.05*a)
                 if y-1>0:
                     ti.atomic_add(pixelField[x-1,y-1],0.05*a)
-            if y+1<windowSize:
+            if y+1<windowH:
                 ti.atomic_add(pixelField[x,y+1],0.25*a)
             if y-1>0:
                 ti.atomic_add(pixelField[x,y-1],0.25*a)
@@ -629,14 +635,15 @@ def drawDensity(zoomInv: ti.f32):
             imgField[i1,i2]=ti.Vector([0,0,0])
 
 def sim():
-    f=0
-    totalT=0
     zoom=1.2
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
+    offset-=o
     while window.running:
-        s=time.time()
         window.get_events()
+        #stop
+        if window.is_pressed(' '):
+            break
         #zoom
         if window.is_pressed('i'):
             zoom *= 0.95
@@ -660,16 +667,10 @@ def sim():
         forceAccumulate()
         #draw logic
         pixelField.fill(0)
-        to_screen(drawScaleInv,zoom, offset)
+        to_screen(zoom, offset)
         drawDensity(zoomInv)
         canvas.set_image(imgField)
         window.show()
-        ti.sync()
-        e=time.time()
-        t=e-s
-        totalT+=t
-        print(f, t, totalT)
-        f+=1
 
 init(preset,k,k2,k3)
 sim()
