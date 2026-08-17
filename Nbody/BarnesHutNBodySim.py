@@ -1,7 +1,7 @@
 import taichi as ti
 from taichi.algorithms import parallel_sort
 ti.reset()
-ti.init(arch=ti.gpu,default_fp=ti.f32,kernel_profiler=True)
+ti.init(arch=ti.gpu,default_fp=ti.f32)#,kernel_profiler=True)
 import math
 import time
 
@@ -11,15 +11,15 @@ n=500000
 m=10
 #   physics
 G=1
-dt=0.005
+dt=0.001
 theta=1 #acceptance angle, larger -> more performance, less accuracy
-eps=2e0 #smoothing, recommended >1e-1
+eps=1e-1 #smoothing, recommended >1e-1
 #   generation
-preset=3
-k=2
-k2=2
-k3=0.4
-spinMult=-2
+preset=2
+k=1
+k2=0
+k3=0.7
+spinMult=0.85
 drawScale=100
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
@@ -674,4 +674,4 @@ def sim():
 init(preset,k,k2,k3)
 sim()
 
-ti.profiler.print_kernel_profiler_info()
+#ti.profiler.print_kernel_profiler_info()
