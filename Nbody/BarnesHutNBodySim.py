@@ -2,8 +2,12 @@ import taichi as ti
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)#,kernel_profiler=True)
 import math
+import static_ffmpeg
+static_ffmpeg.add_paths()
+import subprocess
 
 #simulation parameters
+recording=True
 #   particles
 n=2000000
 totalM=5000000
@@ -15,19 +19,20 @@ theta=1 #acceptance angle, larger -> more performance, less accuracy
 eps=1e0 #smoothing
 #   generation
 preset=3
-k=1
-k2=-1
-k3=0.2
-spinMult=2
+k=0.3
+k2=3
+k3=0.4
+k4=0
+spinMult=2.5
 drawScale=100
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
 #preset 1: circle generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), has spin
-#preset 2: galaxy generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance scaled spin multiplier, has spin
-#preset 3: galaxy merger generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance between galaxy multiplier (k3=1 -> 3*drawScale), has spin
+#preset 2: galaxy generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance scaled spin multiplier, k4=core size (1=all core), has spin
+#preset 3: galaxy merger generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance between galaxy multiplier (k3=1 -> 3*drawScale), k4=galaxy vertical velocities, has spin
 #spin mult - flat multiplier on spin
 #drawScale - generation bounding box size
-#k,k2,k3 - generation parameters, defined above
+#k,k2,k3,k4 - generation parameters, defined above
 
 #   visual
 #       window
@@ -52,7 +57,7 @@ velField=ti.Vector.field(2,dtype=ti.f32,shape=n) #xv,yv
 drawScaleInv=1/drawScale
 o=ti.Vector([drawScale*500,drawScale*500])
 @ti.kernel
-def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
+def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32, k4: ti.f32):
     if preset==0: #square init
         for i in range(n):
             x=ti.random()*drawScale
@@ -93,7 +98,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
                 d=ti.Vector([x,y])-gcenter
                 r=d.norm()
             posField[i]=ti.Vector([x,y])
-            if r>drawScale/40:
+            if r>drawScale*k4:
                 velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2.0*r/(drawScale/2.0)**2)*spinMult * ti.pow(drawScale/2/r,k3) * ti.pow(2,r/(drawScale/2))
             else:
                 velField[i]=ti.Vector([ti.random()-0.5,ti.random()-0.5])*totalM*G/10000
@@ -116,7 +121,7 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32):
                 d=ti.Vector([x,y])-gcenter
                 r=d.norm()
             posField[i]=ti.Vector([x,y])
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,g*0])
+            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,(ti.abs(g)/g) *k4])
     for i in range(n):
         posField[i]+=o
 
@@ -632,8 +637,43 @@ def drawDensity(zoomInv: ti.f32):
         else:
             imgField[i1,i2]=ti.Vector([0,0,0])
 
+if recording:
+    ffmpeg = subprocess.Popen([
+        "ffmpeg",
+        "-y",
+
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-video_size", f"{windowW}x{windowH}",
+        "-framerate", "60",
+        "-i", "-",
+
+        "-an",
+
+        # use NVIDIA's hardware encoder
+        "-c:v", "h264_nvenc",
+        "-preset", "p4",
+        "-cq", "18",
+
+        "-pix_fmt", "yuv420p",
+
+        "Downloads/sim.mp4"
+    ], stdin=subprocess.PIPE)
+
+recordFrame=ti.Vector.field(3,dtype=ti.uint8,shape=(windowH,windowW))
+@ti.kernel
+def createRecorderFrame():
+    for x,y in imgField:
+        c=imgField[x,y]
+        yy=windowH-1-y
+        recordFrame[yy,x]=ti.Vector([
+            ti.cast(ti.min(ti.max(c[0],0),1)*255,ti.uint8),
+            ti.cast(ti.min(ti.max(c[1],0),1)*255,ti.uint8),
+            ti.cast(ti.min(ti.max(c[2],0),1)*255,ti.uint8)
+        ])
+
 def sim():
-    zoom=1.2
+    zoom=1.7
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
     offset-=o
@@ -669,8 +709,15 @@ def sim():
         drawDensity(zoomInv)
         canvas.set_image(imgField)
         window.show()
+        if recording: 
+            createRecorderFrame()
+            frame=recordFrame.to_numpy()
+            ffmpeg.stdin.write(memoryview(frame))
 
-init(preset,k,k2,k3)
+init(preset,k,k2,k3,k4)
 sim()
+if recording:
+    ffmpeg.stdin.close()
+    ffmpeg.wait()
 
 #ti.profiler.print_kernel_profiler_info()
