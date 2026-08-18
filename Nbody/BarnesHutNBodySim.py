@@ -1,13 +1,11 @@
 import taichi as ti
-from taichi.algorithms import parallel_sort
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)#,kernel_profiler=True)
 import math
-import time
 
 #simulation parameters
 #   particles
-n=809551
+n=2000000
 totalM=5000000
 m=totalM/n
 #   physics
@@ -45,6 +43,7 @@ c1=ti.Vector([0.8,0.8,0.5]) #high density
 c2=ti.Vector([0.7,0.4,0.6]) #mid density
 c3=ti.Vector([0.3,0.2,0.7])#low density
 midC=0.3
+
 
 #fields
 posField=ti.Vector.field(2,dtype=ti.f32,shape=n) #x,y
