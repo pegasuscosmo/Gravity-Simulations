@@ -1,873 +1,799 @@
 import taichi as ti
+import tkinter as tk
 ti.reset()
-ti.init(arch=ti.gpu,default_fp=ti.f32)#,kernel_profiler=True)
-import math
-import static_ffmpeg
-static_ffmpeg.add_paths()
-import subprocess
+ti.init(arch=ti.cpu,default_fp=ti.f32)
+#tk init
+root=tk.Tk()
+root.title("Generation Editor")
+root.geometry("300x600")
 
-#simulation parameters
-recording=True
-#   particles
-n=2000000
-totalM=5000000
-m=totalM/n
-#   physics
-G=1
-dt=0.001
-theta=1 #acceptance angle, larger -> more performance, less accuracy
-eps=1e0 #smoothing
-#   generation
-preset=3
-k=1
-k2=-1
-k3=0.2
-k4=0
-spinMult=2
-drawScale=100
+#physics
+G=1 #6.6743e-20 #irl, in km
+dt=1
+e=0.1 #softening for majors
+#   trajectories
+steps=1000
+dtT=dt #different dtT causes 'wiggly' trajectories when close proximity involved
 
-
-#       generation manual
-#preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
-#preset 1: circle generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), has spin
-#preset 2: galaxy generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance scaled spin multiplier, k4=core size (1=all core), has spin
-#preset 3: galaxy merger generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance between galaxy multiplier (k3=1 -> 3*drawScale), k4=galaxy vertical velocities, has spin
-#spin mult - flat multiplier on spin
-#drawScale - generation bounding box size
-#k,k2,k3,k4 - generation parameters, defined above
-
-#   visual
-#       window
-windowW=1920
-windowH=1000
-#       colors
-drawMode=0 #0=density, 1=velocity, 2=hybrid
-#   All Modes
-pc=0.1 #brightness sensitivity
-pb=3 #bloom
-alphaC=1.2 #zoom bright scale    ^ =zoom in ^ brightness  v = zoom in v brightness
-gammaC=1 #contrast
-gammaB=1 #contrast of bloom
-midC=0.4
-#   Density Mode
-c1=ti.Vector([0.8,0.8,0.5]) #high density
-c2=ti.Vector([0.7,0.4,0.6]) #mid density
-c3=ti.Vector([0.3,0.2,0.7])#low density
-#   Velocity Mode
-g1=ti.Vector([1.0,1.0,0.9]) #high speed
-g2=ti.Vector([0.9,0.6,0.3]) #mid speed
-g3=ti.Vector([0.7,0.0,0.0])#low speed
-damp=5000 #affects color
-#   Hybrid Mode
-h1=ti.Vector([1.0,1.0,0.9]) #high speed
-h2=ti.Vector([0.7,0.4,1.0]) #mid speed
-h3=ti.Vector([0.3,0.3,0.8])#low speed
-damp2=100 #affects brightness
-
-
-#fields
-posField=ti.Vector.field(2,dtype=ti.f32,shape=n) #x,y
-velField=ti.Vector.field(2,dtype=ti.f32,shape=n) #xv,yv
-
-drawScaleInv=1/drawScale
-o=ti.Vector([drawScale*500,drawScale*500])
-@ti.kernel
-def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32, k4: ti.f32):
-    if preset==0: #square init
-        for i in range(n):
-            x=ti.random()*drawScale
-            y=ti.random()*drawScale
-            posField[i]=ti.Vector([x,y])
-            vx=(ti.random()-0.5)*k
-            vy=(ti.random()-0.5)*k
-            velField[i]=ti.Vector([vx,vy]) - k2*(posField[i]-ti.Vector([drawScale/2,drawScale/2]))
-    elif preset==1: #circle init
-        for i in range(n):
-            r=ti.cast(drawScale+1,ti.f32)
-            x=0.0
-            y=0.0
-            d=ti.Vector([0.0,0.0])
-            while r>drawScale/2 or r<1e-4:
-                x=ti.random()*drawScale
-                y=ti.random()*drawScale
-                d=ti.Vector([x,y])-ti.Vector([drawScale/2,drawScale/2])
-                r=d.norm()
-            posField[i]=ti.Vector([x,y])
-            vx=(ti.random()-0.5)*k
-            vy=(ti.random()-0.5)*k
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM*r/(drawScale/2)**2)*spinMult + ti.Vector([vx,vy])  - k2*(posField[i]-ti.Vector([drawScale/2,drawScale/2]))
-    elif preset==2: #galaxy init
-        for i in range(n):
-            g=0
-            gcenter=ti.Vector([drawScale/2+g*drawScale*1.5,drawScale/2])
-            r=ti.cast(drawScale+1,ti.f32)
-            x=0.0
-            y=0.0
-            d=ti.Vector([0.0,0.0])
-            while r>drawScale/2 or r<1e-4:
-                rad=ti.random()**k *drawScale/2
-                theta=ti.random()*2*ti.math.pi
-                theta+=1+0.5*ti.sin(k2*theta+(ti.random()-0.5)*ti.math.pi)
-                x=rad*ti.cos(theta)+gcenter[0]
-                y=rad*ti.sin(theta)+gcenter[1]
-                d=ti.Vector([x,y])-gcenter
-                r=d.norm()
-            posField[i]=ti.Vector([x,y])
-            if r>drawScale*k4:
-                velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2.0*r/(drawScale/2.0)**2)*spinMult * ti.pow(drawScale/2/r,k3) * ti.pow(2,r/(drawScale/2))
-            else:
-                velField[i]=ti.Vector([ti.random()-0.5,ti.random()-0.5])*totalM*G/10000
-    elif preset==3: #galaxy merger init
-        for i in range(n):
-            g=k3
-            if i%2:
-                g=-g
-            gcenter=ti.Vector([drawScale/2+g*drawScale*1.5,drawScale/2])
-            r=ti.cast(drawScale+1,ti.f32)
-            x=0.0
-            y=0.0
-            d=ti.Vector([0.0,0.0])
-            while r>drawScale/4 or r<1e-4:
-                rad=ti.random()**k *drawScale/4
-                theta=ti.random()*2*ti.math.pi
-                theta+=1+0.5*ti.sin(k2*theta+(ti.random()-0.5)*ti.math.pi)
-                x=rad*ti.cos(theta)+gcenter[0]
-                y=rad*ti.sin(theta)+gcenter[1]
-                d=ti.Vector([x,y])-gcenter
-                r=d.norm()
-            posField[i]=ti.Vector([x,y])
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,(ti.abs(g)/g) *k4])
-    for i in range(n):
-        posField[i]+=o
-
-
-
-#chatgpt, adapted to taichi
-@ti.func
-def splitBy1(x: ti.uint64) -> ti.uint64:
-    x=ti.cast(x,ti.uint64)
-    x &= ti.u64(0xFFFFFFFF)  # ensure 32-bit
-    x = (x | (x << 16)) & ti.u64(0x0000FFFF0000FFFF)
-    x = (x | (x << 8))  & ti.u64(0x00FF00FF00FF00FF)
-    x = (x | (x << 4))  & ti.u64(0x0F0F0F0F0F0F0F0F)
-    x = (x | (x << 2))  & ti.u64(0x3333333333333333)
-    x = (x | (x << 1))  & ti.u64(0x5555555555555555)
-    return x
-#end cite
-
-#code fields and variables
-chunkBits=8 #8 seems to be the best
-chunkNum=64//chunkBits
-
-codeField=ti.field(dtype=ti.u64,shape=n)
-sortedCodeField=ti.field(dtype=ti.u64,shape=n)
-pointerField=ti.field(dtype=ti.int32,shape=n)
-
-#chatgpt
-@ti.func
-def maskBits(code,k):
-    mask = (1 << chunkBits) - 1
-    return ti.cast((code >> k) & mask,ti.uint64)
-#end cite
-
-scale=1<<30
-
-@ti.kernel
-def createCodes(): #create morton codes   
-    maxPosX=0.0
-    maxPosY=0.0
-    for i in range(n): #find max positions
-        ti.atomic_max(maxPosX,posField[i][0])
-        ti.atomic_max(maxPosY,posField[i][1])
-    maxScaleX=ti.cast(scale,ti.f32)/maxPosX #create scaling factor to go from f32->int32 while 
-    maxScaleY=ti.cast(scale,ti.f32)/maxPosY #maximizing how many bits are used in the resulting i32
-    for i in range(n):
-        x=posField[i][0] #floats
-        y=posField[i][1]
-        xint=ti.cast(x*maxScaleX,ti.int32) #scale positions to int32
-        yint=ti.cast(y*maxScaleY,ti.int32) #cast to i32 first to avoid f32->u64 cast bugginess
-        xu=ti.cast(xint,ti.uint64) #cast to u64 for morton coding
-        yu=ti.cast(yint,ti.uint64)
-        codeField[i]=(splitBy1(xu)|(splitBy1(yu)<<1)) #create morton code
-        pointerField[i]=i
-
-# morton coding quick explanation
-# morton codes are a 1d representation of n-dimensional positions that preserve locality
-# example -
-# x: 100101, y: 011001
-# xSplitBy1: 1000100010, ySplitBy1: 001010000010
-# shift y left 1, then or x and y
-# code: 100101100011
-# in effect this does-
-# x=ABCDEF, y=GHIJKL, code=AGBHCIDJEKFL
-# this creates this z order curve:
-# 0  1  4  5
-# 2  3  6  7
-# 8  9  12 13
-# 10 11 14 15
-# which is a space filling curve that preserves locality, hence why morton codes themselves also preserve locality
-# this implicitly creates a quadtree, which is necessary for Barnes Hut
-
-bitLength=4
-passes=64//bitLength
-l=2**bitLength
-
-
-
-sums=ti.field(dtype=ti.int32,shape=l)
-sums2=ti.field(dtype=ti.int32,shape=l)
-prefixes=ti.field(dtype=ti.int32,shape=l)
-bitString=ti.field(dtype=ti.int32,shape=n)
-sortedCodes=ti.field(dtype=ti.u64,shape=n)
-sortedPointerField=ti.field(dtype=ti.int32,shape=n)
-
-blockSize=64
-blockNum=math.ceil(n/blockSize)
-localRank=ti.field(dtype=ti.int32,shape=n)
-blockCounts=ti.field(dtype=ti.int32,shape=(blockNum,l))
-blockCounts2=ti.field(dtype=ti.int32,shape=(blockNum,l))
-blockPrefixes=ti.field(dtype=ti.int32,shape=(blockNum,l))
-logBlockNum=math.ceil(math.log2(blockNum))
-
-groupSize=256
-groupNum=math.ceil(blockNum/groupSize)
-
-
-@ti.kernel
-def radixPassPart1(p: ti.int32):
-    ti.loop_config(serialize=False)
-    for i in range(l):
-        sums[i]=0
-    ti.loop_config(serialize=False)
-    for block, b in ti.ndrange(blockNum, l):
-        blockCounts[block, b] = 0
-    ti.loop_config(serialize=False)
-    for i in range(n):
-        maskedCode = ti.cast((codeField[i] >> p*bitLength) & ti.u64(l - 1), ti.i32)
-        ti.atomic_add(sums[maskedCode],1)
-        bitString[i]=maskedCode
-    for i in range(n):
-        block=i//blockSize
-        ti.atomic_add(blockCounts[block,bitString[i]],1)
-        blockStartIdx=block*blockSize
-        localIdx=i-blockStartIdx
-        rank=0
-        for j in range(localIdx):
-            k=j+blockStartIdx
-            if bitString[k]==bitString[i]:
-                rank+=1
-        localRank[i]=rank
-def prefixSumBlocks():
-    for w in range(logBlockNum):
-        d=1<<w
-        sumBlockCounts(d)
-    getBlockPrefixes()
-
-@ti.kernel
-def sumBlockCounts(d:ti.int32):
-    for i,b in ti.ndrange(blockNum,l):
-        blockCounts2[i,b]=blockCounts[i,b]
-    for i in range(blockNum):
-        if i>=d:
-            for b in range(l):
-                blockCounts[i,b]+=blockCounts2[i-d,b]
-
-@ti.kernel
-def getBlockPrefixes():
-    for b in range(l):
-        blockPrefixes[0,b]=0
-    ti.loop_config(serialize=False)
-    for j in range(blockNum-1):
-        i=j+1
-        for b in range(l):
-            blockPrefixes[i,b]=blockCounts[j,b]
-@ti.kernel
-def prefixSumCounts():
-    ti.loop_config(serialize=True)
-    for w in range(bitLength):
-        d=2**w
-        for i in range(l):
-            sums2[i]=sums[i]
-        for i in range(l):
-            if i>=d:
-                sums[i]+=sums2[i-d]
-    prefixes[0]=0
-    ti.loop_config(serialize=False)
-    for j in range(l-1):
-        i=j+1
-        prefixes[i]=sums[j]
-@ti.kernel
-def scatter():
-    ti.loop_config(serialize=False)
-    for i in range(n):
-        maskedCode=bitString[i]
-        block=i//blockSize
-        idx=prefixes[maskedCode]+blockPrefixes[block,maskedCode]+localRank[i]
-        sortedCodes[idx]=codeField[i]
-        sortedPointerField[idx]=pointerField[i]
-
-    ti.loop_config(serialize=False)
-    for i in range(n):
-        codeField[i]=sortedCodes[i]
-        pointerField[i]=sortedPointerField[i]
-
-def radixSortController():
-    for p in range(passes):
-        radixPassPart1(p)
-        prefixSumBlocks()
-        prefixSumCounts()
-        scatter()
-
-@ti.func
-def binarySearch(L: ti.int32,R: ti.int32,k: ti.int32) -> ti.int32: #find split index
-    low=L
-    high=R-1
-    while low<high:
-        mid=(low+high+1)//2
-        if findK(L,mid)>k:
-            low=mid
-        else:
-            high=mid-1
-
-    return low
-
-#chatgpt
-@ti.func
-def msb(x: ti.u64) -> ti.i32:
-    idx=0
-    if (x>>32)!=0:
-        x=x>>32
-        idx+=32
-    if (x>> 16) != 0:
-        x=x>>16
-        idx+=16
-    if (x>>8)!=0:
-        x=x>>8
-        idx+=8
-    if (x>>4)!=0:
-        x=x>>4
-        idx+=4
-    if (x>>2)!=0:
-        x=x>>2
-        idx+=2
-    if (x>>1)!=0:
-        idx+=1
-    return idx
-#end cite
-
-@ti.func
-def findK(L: ti.int32,R: ti.int32) -> ti.int32: #find first differing bit
-    i=0
-    if R<0 or R>=n:
-        i=-1
-    else:
-        xor=codeField[L]^codeField[R]
-        if xor==0:
-            i=64+findKTieBreaker(L,R)
-        else:
-            i=63-msb(xor)
-    return i
-
-@ti.func
-def findKTieBreaker(L: ti.int32,R: ti.int32) -> ti.int32: #find differing bit between the indices
-    i=0
-    if R<0 or R>=n:
-        i=-1
-    else:
-        xor=L^R
-        if xor==0:
-            i=64
-        else:
-            i=63-msb(xor)
-    return i
-
-#tree node fields
-nodeN=2*n-1
-nodeRangeField=ti.Vector.field(2,dtype=ti.int32, shape=nodeN,)
-nodeParentField=ti.field(dtype=ti.int32, shape=nodeN)
-nodeChildField=ti.Vector.field(2,dtype=ti.int32, shape=nodeN)
-
-nodeMassField=ti.field(dtype=ti.f32,shape=nodeN)
-nodeCOMField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN)
-nodeABoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #min x,y
-nodeBBoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #max x,y
-
-reversePointerField=ti.field(dtype=ti.int32,shape=n)
-
-@ti.kernel
-def createTree(): #create the binary LVBH tree
-    for i in range(2*n-1):#reset fields
-        nodeParentField[i]=-1
-    for i in range(n): #initialize leaves
-        nodeRangeField[i] = ti.Vector([i, i])
-        nodeABoundField[i]=posField[sortedPointerField[i]]
-        nodeBBoundField[i]=posField[sortedPointerField[i]]
-        nodeCOMField[i]=posField[sortedPointerField[i]]
-        nodeMassField[i]=m
-        reversePointerField[sortedPointerField[i]]=i
-    for i in range(n-1):
-        #taichi adapted chatgpt code (literally magic)
-        dp=findK(i,i+1)
-        dn=findK(i,i-1)
-        d=1
-        if dp-dn<0:
-            d=-1  
-        deltaMin=findK(i,i-d)
-        lMax=1
-        while findK(i,i+lMax*d) > deltaMin:
-            lMax*=2
-        l = 0
-        t = lMax
-        while t > 1:
-            t //= 2
-            if findK(i, i + (l + t) * d) > deltaMin:
-                l += t
-        j=i+l*d
-        L=ti.min(i,j)
-        R=ti.max(i,j)
-        L=ti.max(0,ti.min(i,j))
-        R=ti.min(n-1,ti.max(i,j))
-        idx=i+n
-        gamma=findK(L,R)
-        split=binarySearch(L,R,gamma)
-        left=0
-        right=0
-        if L==split:
-            left=split
-        else:
-            left=split+n
-        if R==split+1:
-            right=split+1
-        else:
-            right=split+1+n
-        #end cite
-
-        nodeRangeField[idx]=ti.Vector([L,R])
-        nodeChildField[idx]=ti.Vector([left,right])
-        nodeParentField[left]=idx
-        nodeParentField[right]=idx
-#the tree created looks like this (somehow):
-# 0,  1,  2,  ...  ,  n-1  ,  n  ,  n+1,  n+2,  ...  ,  2*n-2
-# leaf nodes                 root   internal nodes
-
-
-#fields for mass and bound allocation
-set=ti.field(dtype=ti.int32,shape=n)
-setLen=ti.field(dtype=ti.int32,shape=())
-nextSet=ti.field(dtype=ti.int32,shape=n)
-nextSetLen=ti.field(dtype=ti.int32,shape=())
-readyCount=ti.field(ti.int32,nodeN)
-
-@ti.kernel
-def massBoundAllocate() -> ti.int32: #allocate masses, COMs, and bounds
-    l=setLen[None]
-    nextSetLen[None]=0
-    for i in range(l):
-        node=set[i]
-        if node>=n:
-            left=nodeChildField[node][0]
-            right=nodeChildField[node][1]
-            leftM=nodeMassField[left]
-            rightM=nodeMassField[right]
-            leftCOM=nodeCOMField[left]
-            rightCOM=nodeCOMField[right]
-            nodeM=leftM+rightM
-            nodeCOM=(leftCOM*leftM + rightCOM*rightM)/nodeM
-
-            nodeMassField[node]=nodeM
-            nodeCOMField[node]=nodeCOM
-
-            leftABound=nodeABoundField[left]
-            leftBBound=nodeBBoundField[left]
-            rightABound=nodeABoundField[right]
-            rightBBound=nodeBBoundField[right]
-
-            aBound=ti.Vector([ti.min(leftABound[0],rightABound[0]),ti.min(leftABound[1],rightABound[1])])
-            bBound=ti.Vector([ti.max(leftBBound[0],rightBBound[0]),ti.max(leftBBound[1],rightBBound[1])])
-
-            nodeABoundField[node]=aBound
-            nodeBBoundField[node]=bBound
-        p=nodeParentField[node]
-        if p!=-1:
-            old=ti.atomic_add(readyCount[p],1)
-            if old==1:
-                oldLen=ti.atomic_add(nextSetLen[None],1)
-                nextSet[oldLen]=p
-    return nextSetLen[None]
-
-@ti.kernel
-def massBoundAllocateInit(): #initialize fields and variables for allocation
-    setLen[None]=0
-    nextSetLen[None]=n
-    for i in range(nodeN):
-        readyCount[i]=0
-        if i<n:
-            set[i]=0
-            nextSet[i]=i
-
-@ti.kernel
-def swap(): #swap set and nextSet
-    for i in range(n):
-        set[i]=nextSet[i]
-    temp=setLen[None]
-    setLen[None]=nextSetLen[None]
-    nextSetLen[None]=temp
-
-def massBoundAllocateController():
-    global set, nextSet, setLen, nextSetLen
-    massBoundAllocateInit()
-    length=n
-    while length>0:
-        swap()
-        length=massBoundAllocate()
-
-#quick explanation of the allocation logic
-# nodes require their childrens masses, COM, and bounds to be calculated, 
-# which in turn need their own children and so on
-# so, we start with the leaves (already calculated), then ping their parents
-# when pinged (+1 to their readycount) and their ready count hits 2 (all children ready),
-# the node is added to nextSet, and after all nodes in the current set have finished, the
-# nodes in nextSet are transferred to the current set to be calculated.
-# this continues until nextSet is empty
-
-
-#stacks for each particle
-maxStackDepth=128
-stack=ti.field(dtype=ti.int32,shape=(n,maxStackDepth))
-stackTop=ti.field(dtype=ti.int32,shape=n)
-@ti.kernel
-def forceAccumulate(): #accelerate particles, velocity verlet integration
-    for i in range(n):
-        posField[sortedPointerField[i]]+=velField[sortedPointerField[i]]*dt/2
-        stackTop[i]=0
-    for i in range(n):
-        stack[i,0]=n
-        stackTop[i]=1
-        pos=posField[sortedPointerField[i]]
-        accelVec=ti.Vector([0.0,0.0])
-        while stackTop[i]>0:
-            #setup
-            stackTop[i]-=1
-            node=stack[i,stackTop[i]]
-            
-            w=nodeBBoundField[node]-nodeABoundField[node]
-            maxW=ti.max(w[0],w[1])
-            nodePos=nodeCOMField[node]
-            d=nodePos-pos
-            r=d.norm()+eps
-            L=nodeRangeField[node][0]
-            R=nodeRangeField[node][1]
-            containI=(L<=i and i<=R)
-            
-            #BH gravity
-            if node<n:
-                if node!=i:
-                    if r>eps:
-                        accel=G*nodeMassField[node]/(r*r)
-                        accelVec+=accel*d/r
-            else:
-                if r>eps:
-                    if maxW/r>theta or containI:
-                        if stackTop[i]<maxStackDepth-2 and nodeChildField[node][1]!=-1:
-                            stack[i,stackTop[i]]=nodeChildField[node][0]
-                            stackTop[i]+=1
-                            stack[i,stackTop[i]]=nodeChildField[node][1]
-                            stackTop[i]+=1
-
-                    else:
-                        accel=G*nodeMassField[node]/(r*r)
-                        accelVec+=accel*d/r
-        velField[sortedPointerField[i]]+=accelVec*dt
-    for i in range(n):    
-        posField[i]+=velField[i]*dt/2
-
-#quick explanation time again!
-# each particle has their own stack, which starts with the root node
-# if the nodes largest side length divided by the distance from the 
-# particle to the node's COM is less than the parameter theta, the node is accepted. 
-# this is effectively seeing if the node is contained within a certain angle (theta) from the particle
-# when a node is accepted, it is treated like its own particle, and normal newtonian gravity is applied.
-# if the node isn't accepted, it adds its children to the stack. 
-# This in effect creates a depth first search for nodes that satisfy s/d<theta
-
-
-window = ti.ui.Window("Barnes Hut Sim", (windowW, windowH),pos=(0,40))
+#ti window
+sW,sH=1620,950 #screen resolution
+window = ti.ui.Window("Ring Semi-NBody Sim", (sW, sH))
 canvas = window.get_canvas()
 gui = window.get_gui()
 
-posDraw = ti.Vector.field(2, dtype=ti.f32, shape=n)
+#generation
+particleN=1000000
+majorN=100 #maximum
 
-pixelField=ti.field(dtype=ti.f32,shape=(windowW,windowH))
-imgField=ti.Vector.field(3,dtype=ti.f32,shape=(windowW,windowH))
+rings=[ #default
+    #inner  outer   % of particles
+    [100,   500,    50],
+    [200,   400,    50]
+]
 
-aspectRatio=windowW/windowH
+bodies=[ #default
+    #start pos      start vel   mass    radius
+    [sW/2,sH/2,      0,0,      100,     0.01],    #parent
+]
+
+#colors
+particleColor=ti.Vector([0.4,0.4,0.4])
+rainbowMode=False
+rSpMult=ti.field(dtype=ti.f32,shape=())
+rParam=ti.field(dtype=ti.f32,shape=())
+brightCutoff=0.2 #brightness cutoff for major bodies
+
+#fields
+#   particles
+posField=ti.Vector.field(2,dtype=ti.f32,shape=particleN) #particle positions
+velField=ti.Vector.field(2,dtype=ti.f32,shape=particleN) #particle velocities
+enabledField=ti.field(dtype=ti.u8,shape=particleN) #enabled particles - disabled on collision
+#   majors
+majorNCurrent=ti.field(dtype=ti.u64,shape=()) #taichi var
+majorNCurrent[None]=len(bodies) #number of bodies
+majorPosField=ti.Vector.field(2,dtype=ti.f32,shape=majorN) #major positions
+majorVelField=ti.Vector.field(2,dtype=ti.f32,shape=majorN) #major velocities
+majorMassField=ti.field(dtype=ti.f32,shape=majorN) #major masses
+majorRadii=ti.field(dtype=ti.f32,shape=majorN) #major radii
+majorColors=ti.Vector.field(3,dtype=ti.f32,shape=majorN) #major colors
+#   rings
+ringVals=ti.Vector.field(3,dtype=ti.f32,shape=10)
+ringN=ti.field(dtype=ti.int8,shape=())
+#   trajectories
+trajectories=ti.Vector.field(2,dtype=ti.f32,shape=(steps,majorN)) #major x steps trajectory field
+trajPos=ti.Vector.field(2,dtype=ti.f32,shape=majorN) #projected positions in trajectories 
+trajPosBckp=ti.Vector.field(2,dtype=ti.f32,shape=majorN) #backup projected positions for force calculation
+trajVel=ti.Vector.field(2,dtype=ti.f32,shape=majorN) #projected velocities
+vertices=ti.Vector.field(2,dtype=ti.f32,shape=(steps*majorN)) #major*steps trajectory field, for drawing
+trajColors=ti.Vector.field(3,dtype=ti.f32,shape=(steps*majorN)) #per vertex color field
+#   body creation
+posN=ti.Vector([0.0,0.0]) #position
+drawPosN=ti.Vector.field(2,dtype=ti.f32,shape=1) #draw position
+velN=ti.Vector([0.0,0.0]) #velocity
+massN=0 #mass
+radN=0 #radius
+colorN=(0,0,0) #color
+trajN=ti.Vector.field(2,dtype=ti.f32,shape=steps) #projected position
+tau=2*3.14159265359
+
+def listToText(l):
+    s=""
+    for i in l:
+        s+=str(i)+"\n"
+    return s
+
 @ti.kernel
-def to_screen(zoom: ti.f32, offset: ti.types.vector(2,ti.f32)):
-    for i in range(n):
-        p=posField[i]-ti.Vector([drawScale/2,drawScale/2])+offset
-        scaleP=p/drawScale/zoom
-        scaleP[0]/=aspectRatio
-        p1=(scaleP+ti.Vector([0.5,0.5]))
-        p1[0]*=windowW
-        p1[1]*=windowH
-        posDraw[i]=p1
-#taichi windows use [0,1] as their coordinates, so to draw them, positions must be scaled first
+def initColors():
+    majorColors[0]=ti.Vector([1,1,1]) #first body white
+    for i in range(majorN-1):
+        j=i+1
+        bright=-1
+        r=1.0
+        g=1.0
+        b=1.0
+        while bright<brightCutoff: #avoid dark colors
+            r=ti.random()
+            g=ti.random()
+            b=ti.random()
+            bright=ti.sqrt(r*r+g*g+b*b)
+
+        majorColors[j]=ti.Vector([r,g,b]) #set random color
+initColors() #only called once
 
 @ti.kernel
-def drawDensity(zoomInv: ti.f32):
-    for i in range(n):
-        pos=posDraw[i]
-        x=ti.cast(pos[0],ti.int32)
-        y=ti.cast(pos[1],ti.int32)
-        if x<windowW and x>0 and y>0 and y<windowH:
-            a=1
-            ti.atomic_add(pixelField[x,y],a)
-            if x+1<windowW:
-                ti.atomic_add(pixelField[x+1,y],0.25*a)
-                if y+1<windowH:
-                    ti.atomic_add(pixelField[x+1,y+1],0.05*a)
-                if y-1>0:
-                    ti.atomic_add(pixelField[x+1,y-1],0.05*a)
-            if x-1>0:
-                ti.atomic_add(pixelField[x-1,y],0.25*a)
-                if y+1<windowH:
-                    ti.atomic_add(pixelField[x-1,y+1],0.05*a)
-                if y-1>0:
-                    ti.atomic_add(pixelField[x-1,y-1],0.05*a)
-            if y+1<windowH:
-                ti.atomic_add(pixelField[x,y+1],0.25*a)
-            if y-1>0:
-                ti.atomic_add(pixelField[x,y-1],0.25*a)
-    for i1,i2 in pixelField:
-        if pixelField[i1,i2]!=0:
-            v=pixelField[i1,i2]*ti.pow(zoomInv,alphaC)
-            v2=pixelField[i1,i2]*ti.pow(zoomInv,2)
-            b=ti.pow(1-ti.exp(-pc*v),gammaC)
-            bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
-            t=(b-midC)/(1-midC)
-            c=c2*(1-t)+c1*t #smoothing logic and above variables modified from chat gpt
-            if b<midC:
-                t=b/midC
-                c=c3*(1-t)+c2*t
-            imgField[i1,i2]=c*bb
+def initTI():
+    COM=ti.Vector([0.0,0.0]) #Center of major mass vector
+    m=0 #total mass
+    for i in range(majorNCurrent[None]):
+        COM+=majorPosField[i]*majorMassField[i]
+        m+=majorMassField[i]
+    COM/=m #COM formula
+    f=0
+    ti.loop_config(serialize=True)
+    for ri in range(ringN[None]):
+        ring=ringVals[ri]
+        np=ti.cast(particleN*ring[2],ti.int32)
+        ti.loop_config(serialize=False)
+        for i in range(np):
+            innerRad=ti.cast(ring[0], ti.f32)
+            outerRad=ti.cast(ring[1], ti.f32)
+            r=0.0
+            theta=0.0
+            x=0.0
+            y=0.0
+            d=ti.Vector([0,0])
+            while r<innerRad:
+                r=ti.sqrt(ti.random())*outerRad
+            theta=ti.random()*tau
+            x=ti.cos(theta)*r
+            y=ti.sin(theta)*r
+            posField[f+i]=ti.Vector([x,y])+COM
+            d=ti.Vector([x,y])
+            s=ti.sqrt(G*m/r) #orbital speed for circular orbit
+            velField[f+i]=ti.Vector([d[1], -d[0]])/r*s #set velocity perpendicular to d
+        f+=np
+    for s in range(steps):
+        for i in range(majorNCurrent[None]):
+            trajColors[s*majorN+i]=majorColors[i] #set trajectory colors
+
+#tkinter UI and functions
+def submit(idx=-1):
+    pos=posEntry.get()
+    vel=velEntry.get()
+    mass=massEntry.get()
+    rad=radiusEntry.get()
+    if idx==-1:
+        if pos=="":
+            errorLabel.config(text="No Position Given")
+            return
+        if vel=="":
+            errorLabel.config(text="No Velocity Given")
+            return
+        if mass=="":
+            errorLabel.config(text="No Mass Given")
+            return
+        if rad=="":
+            errorLabel.config(text="No Radius Given")
+            return
+    anyGiven=pos!="" or vel!="" or mass!="" or rad!=""
+    if not anyGiven:
+        errorLabel.config(text="No Parameters Given")
+        return
+    if not mass.isnumeric() and (idx==-1 or mass!=""):
+        errorLabel.config(text=f"Invalid Mass {mass}")
+        return
+    t=""
+    for i in rad:
+        if i!=".":
+            t+=i
+    if not t.isnumeric() and (idx==-1 or t!=""):
+        errorLabel.config(text=f"Invalid Radius {rad}")
+        return
+    if pos!="":
+        t=""
+        for i in pos:
+            if i==",":
+                x=t
+                t=""
+            elif i!=" ":
+                t+=i
+        y=t
+        if not x.isnumeric():
+            errorLabel.config(text=f"Invalid X Coordinate {x}")
+            return
+        if not y.isnumeric():
+            errorLabel.config(text=f"Invalid Y Coordinate {y}")
+            return
+        x=float(x)
+        y=float(y)
+    if vel!="":
+        t=""
+        t2=""
+        for i in vel:
+            if i==",":
+                xv=t
+                xv2=t2
+                t=""
+                t2=""
+            elif i!=" ":
+                t+=i
+                if i!="-" and i!=".":
+                    t2+=i
+        yv=t
+        yv2=t2
+        if not xv2.isnumeric():
+            errorLabel.config(text=f"Invalid X Velocity {xv}")
+            return
+        if not yv2.isnumeric():
+            errorLabel.config(text=f"Invalid Y Velocity {yv}")
+            return
+        xv=float(xv)
+        yv=float(yv)
+    if mass!="":
+        mass=float(mass)
+    if rad!="":
+        rad=float(rad)
+    
+    errorLabel.config(text=" ")
+    if idx!=-1:
+        if pos!="":
+            bodies[idx][0]=x
+            bodies[idx][1]=y
+        if vel!="":
+            bodies[idx][2]=xv
+            bodies[idx][3]=yv
+        if mass!="":
+            bodies[idx][4]=mass
+        if rad!="":
+            bodies[idx][5]=rad
+    else:
+        l=[x,y,xv,yv,mass,rad]
+        bodies.append(l)
+    bodyLabel.config(text=f"Bodies: {listToText(bodies)}")
+
+def remove():
+    idx=indexEntry.get()
+    indexEntry.delete(0,len(idx))
+    if idx!="" and (idx.capitalize()!=idx or idx!=idx.lower() or int(idx)>=len(bodies)):
+        errorLabel.config(text=f"Invalid Index: {idx}")
+    else:
+        if idx=="":
+            idx=-1
         else:
-            imgField[i1,i2]=ti.Vector([0,0,0])
+            idx=int(idx)
+        if len(bodies)>0:
+            bodies.pop(idx)
+            bodyLabel.config(text=f"Bodies: {listToText(bodies)}")
+            errorLabel.config(text=" ")
+        else:
+            errorLabel.config(text="Nothing to Remove")
 
-countField=ti.field(dtype=ti.int32,shape=(windowW,windowH))
-@ti.kernel
-def drawVelocity():
-    for i in range(n):
-            pos=posDraw[i]
-            x=ti.cast(pos[0],ti.int32)
-            y=ti.cast(pos[1],ti.int32)
-            if x<windowW and x>0 and y>0 and y<windowH:
-                a=velField[i].norm_sqr()
-                ti.atomic_add(pixelField[x,y],a)
-                ti.atomic_add(countField[x,y],1)
-                if x+1<windowW:
-                    ti.atomic_add(pixelField[x+1,y],0.15*a)
-                    ti.atomic_add(countField[x+1,y],1)
-                    if y+1<windowH:
-                        ti.atomic_add(pixelField[x+1,y+1],0.05*a)
-                        ti.atomic_add(countField[x+1,y+1],1)
-                    if y-1>0:
-                        ti.atomic_add(pixelField[x+1,y-1],0.05*a)
-                        ti.atomic_add(countField[x+1,y-1],1)
-                if x-1>0:
-                    ti.atomic_add(pixelField[x-1,y],0.15*a)
-                    ti.atomic_add(countField[x+-1,y],1)
-                    if y+1<windowH:
-                        ti.atomic_add(pixelField[x-1,y+1],0.05*a)
-                        ti.atomic_add(countField[x-1,y+1],1)
-                    if y-1>0:
-                        ti.atomic_add(pixelField[x-1,y-1],0.05*a)
-                        ti.atomic_add(countField[x-1,y-1],1)
-                if y+1<windowH:
-                    ti.atomic_add(pixelField[x,y+1],0.15*a)
-                    ti.atomic_add(countField[x,y+1],1)
-                if y-1>0:
-                    ti.atomic_add(pixelField[x,y-1],0.15*a)
-                    ti.atomic_add(countField[x,y-1],1)
-    for i1,i2 in pixelField:
-            if pixelField[i1,i2]!=0:
-                v=pixelField[i1,i2]/countField[i1,i2]/damp
-                v2=pixelField[i1,i2]/countField[i1,i2]/damp
-                b=ti.pow(1-ti.exp(-pc*v),gammaC)
-                bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
-                t=(b-midC)/(1-midC)
-                c=g2*(1-t)+g1*t #smoothing logic and above variables modified from chat gpt
-                if b<midC:
-                    t=b/midC
-                    c=g3*(1-t)+g2*t
-                imgField[i1,i2]=c*bb
-            else:
-                imgField[i1,i2]=ti.Vector([0,0,0])
+def replace():
+    idx=indexEntry.get()
+    if idx!="" and (idx.capitalize()!=idx or idx!=idx.lower() or int(idx)>=len(bodies)):
+        errorLabel.config(text=f"Invalid Index: {idx}")
+    elif len(bodies)>0:
+        if idx=="":
+            submit(len(bodies)-1)
+        else:
+            submit(int(idx))
+        errorLabel.config(text=" ")
+    else:
+        errorLabel.config(text="Nothing to Replace")
 
-@ti.kernel
-def drawHybrid(zoomInv: ti.f32):
-    for i in range(n):
-            pos=posDraw[i]
-            x=ti.cast(pos[0],ti.int32)
-            y=ti.cast(pos[1],ti.int32)
-            if x<windowW and x>0 and y>0 and y<windowH:
-                a=velField[i].norm_sqr()
-                ti.atomic_add(pixelField[x,y],a)
-                ti.atomic_add(countField[x,y],1)
-                if x+1<windowW:
-                    ti.atomic_add(pixelField[x+1,y],0.15*a)
-                    ti.atomic_add(countField[x+1,y],1)
-                    if y+1<windowH:
-                        ti.atomic_add(pixelField[x+1,y+1],0.05*a)
-                        ti.atomic_add(countField[x+1,y+1],1)
-                    if y-1>0:
-                        ti.atomic_add(pixelField[x+1,y-1],0.05*a)
-                        ti.atomic_add(countField[x+1,y-1],1)
-                if x-1>0:
-                    ti.atomic_add(pixelField[x-1,y],0.15*a)
-                    ti.atomic_add(countField[x+-1,y],1)
-                    if y+1<windowH:
-                        ti.atomic_add(pixelField[x-1,y+1],0.05*a)
-                        ti.atomic_add(countField[x-1,y+1],1)
-                    if y-1>0:
-                        ti.atomic_add(pixelField[x-1,y-1],0.05*a)
-                        ti.atomic_add(countField[x-1,y-1],1)
-                if y+1<windowH:
-                    ti.atomic_add(pixelField[x,y+1],0.15*a)
-                    ti.atomic_add(countField[x,y+1],1)
-                if y-1>0:
-                    ti.atomic_add(pixelField[x,y-1],0.15*a)
-                    ti.atomic_add(countField[x,y-1],1)
-    for i1,i2 in pixelField:
-            if pixelField[i1,i2]!=0:
-                v=pixelField[i1,i2]/countField[i1,i2]/damp
-                v2=countField[i1,i2]/damp2 *ti.pow(zoomInv,2)
-                b=ti.pow(1-ti.exp(-pc*v),gammaC)
-                bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
-                t=(b-midC)/(1-midC)
-                c=h2*(1-t)+h1*t #smoothing logic and above variables modified from chat gpt
-                if b<midC:
-                    t=b/midC
-                    c=h3*(1-t)+h2*t
-                imgField[i1,i2]=c*bb
-            else:
-                imgField[i1,i2]=ti.Vector([0,0,0])
+def submitRing(idx=-1):
+    inn=innerEntry.get()
+    out=outerEntry.get()
+    per=percentEntry.get()
+    if idx==-1:
+        if inn=="" or out=="" or per=="":
+            errorLabel.config(text="Nothing to Append")
+            return
+        l=[float(inn),float(out),float(per)]
+        if l[0]>l[1]*0.965:
+            errorLabel.config(text="Ring too Thin")
+            return
+        errorLabel.config(text=" ")
+        rings.append(l)
+    if inn!="":
+        if rings[idx][1]*0.965<float(inn):
+            errorLabel.config(text="Ring too Thin")
+            return
+        rings[idx][0]=float(inn)
+    if out!="":
+        if rings[idx][0]/0.965>float(out):
+            errorLabel.config(text="Ring too Thin")
+        rings[idx][1]=float(out)
+    if per!="":
+        rings[idx][2]=float(per)
+    ringLabel.config(text=f"Rings: {listToText(rings)}")
 
-@ti.kernel
-def invert():
-    for i1,i2 in pixelField:
-        if imgField[i1,i2][0]!=0 or imgField[i1,i2][1]!=0 or imgField[i1,i2][2]!=0:
-            imgField[i1,i2]=ti.Vector([1,1,1])-imgField[i1,i2]
+def removeRing():
+    idx=indexRingEntry.get()
+    indexRingEntry.delete(0,len(idx))
+    if idx!="" and (idx.capitalize()!=idx or idx!=idx.lower() or int(idx)>=len(bodies)):
+        errorLabel.config(text=f"Invalid Index: {idx}")
+        return
+    if idx=="":
+        idx=-1
+    else:
+        idx=int(idx)
+    if len(rings)>0:
+        rings.pop(idx)
+        ringLabel.config(text=f"Rings: {listToText(rings)}")
+        errorLabel.config(text=" ")
+    else:
+        errorLabel.config(text="Nothing to Remove")
 
-if recording:
-    ffmpeg = subprocess.Popen([
-        "ffmpeg",
-        "-y",
+def replaceRing():
+    idx=indexRingEntry.get()
+    if idx!="" and (idx.capitalize()!=idx or idx!=idx.lower() or int(idx)>=len(rings)):
+        errorLabel.config(text=f"Invalid Index: {idx}")
+    elif len(rings)>0:
+        if idx=="":
+            submitRing(len(rings)-1)
+        else:
+            submitRing(int(idx))
+        errorLabel.config(text=" ")
+    else:
+        errorLabel.config(text="Nothing to Replace")
 
-        "-f", "rawvideo",
-        "-pix_fmt", "rgb24",
-        "-video_size", f"{windowW}x{windowH}",
-        "-framerate", "60",
-        "-i", "-",
+#Tkinter UI
+#   Body Creation
+#       Labels
+posLabel=tk.Label(root,text="Position x,y")
+posLabel.grid(row=0,column=0)
+velLabel=tk.Label(root,text="Velocity xv,yv")
+velLabel.grid(row=1,column=0)
+massLabel=tk.Label(root,text="Mass")
+massLabel.grid(row=2,column=0)
+radiusLabel=tk.Label(root,text="Radius")
+radiusLabel.grid(row=3,column=0)
+#       Entries
+posEntry=tk.Entry(root)
+posEntry.grid(row=0,column=1,columnspan=3)
+velEntry=tk.Entry(root)
+velEntry.grid(row=1,column=1,columnspan=3)
+massEntry=tk.Entry(root)
+massEntry.grid(row=2,column=1,columnspan=3)
+radiusEntry=tk.Entry(root)
+radiusEntry.grid(row=3,column=1,columnspan=3)
+#       Index
+indexEntry=tk.Entry(root)
+indexEntry.grid(row=4,column=1,columnspan=3)
+indexLabel=tk.Label(root,text="Remove/Replace Index")
+indexLabel.grid(row=4,column=0,columnspan=1)
+#       Add/Remove/Replace Buttons
+addButton=tk.Button(root,command=submit,text="Append")
+addButton.grid(row=5,column=1)
+removeButton=tk.Button(root,command=remove,text="Remove")
+removeButton.grid(row=5,column=2)
+replaceButton=tk.Button(root,command=replace,text="Replace")
+replaceButton.grid(row=5,column=3)
+#       List display
+bodyLabel=tk.Label(root,text=f"Bodies: {listToText(bodies)}")
+bodyLabel.grid(row=6,column=0,columnspan=4)
+#   Rings
+#       Labels
+innerLabel=tk.Label(root,text="Inner Ring Radius")
+innerLabel.grid(row=7,column=0)
+outerLabel=tk.Label(root,text="Outer Ring Radius")
+outerLabel.grid(row=8,column=0)
+percentLabel=tk.Label(root,text="Percent of Particles")
+percentLabel.grid(row=9,column=0)
+indexRingLabel=tk.Label(root,text="Remove/Replace Index")
+indexRingLabel.grid(row=10,column=0)
+#       Entries
+innerEntry=tk.Entry(root)
+innerEntry.grid(row=7,column=1,columnspan=3)
+outerEntry=tk.Entry(root)
+outerEntry.grid(row=8,column=1,columnspan=3)
+percentEntry=tk.Entry(root)
+percentEntry.grid(row=9,column=1,columnspan=3)
+indexRingEntry=tk.Entry(root)
+indexRingEntry.grid(row=10,column=1,columnspan=3)
+#       Add/Remove/Replace Buttons
+ringSubmitButton=tk.Button(root,text="Append",command=submitRing)
+ringSubmitButton.grid(row=11,column=1)
+ringRemoveButton=tk.Button(root,text="Remove",command=removeRing)
+ringRemoveButton.grid(row=11,column=2)
+ringReplaceButton=tk.Button(root,text="Replace",command=replaceRing)
+ringReplaceButton.grid(row=11,column=3)
+#       List display
+ringLabel=tk.Label(root,text=f"Rings: {listToText(rings)}")
+ringLabel.grid(row=12,column=0,columnspan=4)
+#   Error display
+errorLabel=tk.Label(root,text=" ")
+errorLabel.grid(row=13,column=0,columnspan=4)
 
-        "-an",
+def init():
+    global posN,velN,massN,radN,colorN
+    global body,LMB,paused #globals to avoid local variable assignment
+    global innerRad, outerRad, offset, zoom
 
-        # use NVIDIA's hardware encoder
-        "-c:v", "h264_nvenc",
-        "-preset", "p4",
-        "-cq", "18",
-
-        "-pix_fmt", "yuv420p",
-
-        "Downloads/sim.mp4"
-    ], stdin=subprocess.PIPE)
-
-recordFrame=ti.Vector.field(3,dtype=ti.uint8,shape=(windowH,windowW))
-@ti.kernel
-def createRecorderFrame():
-    for x,y in imgField:
-        c=imgField[x,y]
-        yy=windowH-1-y
-        recordFrame[yy,x]=ti.Vector([
-            ti.cast(ti.min(ti.max(c[0],0),1)*255,ti.uint8),
-            ti.cast(ti.min(ti.max(c[1],0),1)*255,ti.uint8),
-            ti.cast(ti.min(ti.max(c[2],0),1)*255,ti.uint8)
-        ])
-
-def sim():
-    global drawMode
-    invertOn=False
-    zoom=1.7
-    zoomInv=1/zoom
+    iRtemp=innerEntry.get() #outputs string
+    if iRtemp!="": #if nothing in the text entry, use default
+        innerRad=float(iRtemp)
+    oRtemp=outerEntry.get() #same as inner radius
+    if oRtemp!="":
+        outerRad=float(oRtemp)
+    if bodies==[] or rings==[]: #do not generate on empty major or rings list
+        errorLabel.config(text="Nothing to Generate")
+        return
+    if len(rings)>10: #do not generate on overfilled rings list
+        errorLabel.config(text="Too Many Rings")
+        return
+    totalPercent=0
+    ringN[None]=len(rings)
+    ringVals.fill(0)
+    for i in range(len(rings)): #add ring values to taichi field
+        r=rings[i]
+        totalPercent+=r[2]
+        if r[2]<0: #do not generate on negative percents
+            errorLabel.config(text="Cannot Generate With Negative Percents")
+            return
+        if totalPercent>100: #do not generate on >100% rings
+            errorLabel.config(text="Cannot Generate With >100%")
+            return
+        if r[0]>r[1]:
+            errorLabel.config(text=f"Ring {i}'s Inner Radius is Larger than Outer Radius")
+            return
+        if r[0]>r[1]*0.965:
+            errorLabel.config(text=f"Ring {i} Too Thin")
+            return
+        ringVals[i]=ti.Vector([r[0],r[1],r[2]/100])
+    errorLabel.config(text="") #reset error text in tkinter if works
+    #reset vars and fields
+    pixels.fill(0); drawMajorPos.fill(0); drawMajorRadii.fill(0)
+    body=True; LMB=False
+    drawPosN[0]=ti.Vector([0.0,0.0])
+    posN=ti.Vector([0.0,0.0]); velN=ti.Vector([0.0,0.0])
+    massN=0; radN=0; colorN=(0,0,0)
+    enabledField.fill(1); majorPosField.fill(0)
+    majorVelField.fill(0); majorMassField.fill(0)
+    majorRadii.fill(0); trajectories.fill(0)
+    vertices.fill(0); trajN.fill(0)
+    majorNCurrent[None]=len(bodies)
+    posField.fill(0); velField.fill(0)
+    zoom=0.95
     offset=ti.Vector([0.0,0.0])
-    offset-=o
-    while window.running:
-        window.get_events()
-        #stop
-        if window.is_pressed(' '):
-            break
-        #zoom
-        if window.is_pressed('i'):
-            zoom *= 0.95
-        if window.is_pressed('k'):
-            zoom *= 1.05
-        #movement
-        if window.is_pressed('w'):
-            offset[1]-=zoom*(drawScale/100)
-        if window.is_pressed('s'):
-            offset[1]+=zoom*(drawScale/100)
-        if window.is_pressed('a'):
-            offset[0]+=zoom*(drawScale/100)
-        if window.is_pressed('d'):
-            offset[0]-=zoom*(drawScale/100)
+    # init for majors
+    for i in range(majorNCurrent[None]):
+        b=bodies[i]
+        majorPosField[i]=ti.Vector([b[0],b[1]])
+        majorVelField[i]=ti.Vector([b[2],b[3]])
+        majorMassField[i]=b[4]
+        majorRadii[i]=b[5]
+    initTI()
+#Generation button
+updSimButton=tk.Button(root,text="Generate",command=init)
+updSimButton.grid(row=14,column=0,columnspan=4)
 
-        with gui.sub_window("Draw Mode", 0.,0, 0.05, 0.075):
-            if drawMode==0:
-                if gui.button("Velocity"):
-                    drawMode=1
-            elif drawMode==1:
-                if gui.button("Hybrid"):
-                    drawMode=2
-            else:
-                if gui.button("Density"):
-                    drawMode=0
-            if invertOn:
-                if gui.button("Normal"):
-                    invertOn=not invertOn
-            else:
-                if gui.button("Invert"):
-                    invertOn=not invertOn
+@ti.kernel
+def stepParticles():
+    for i in range(particleN):
+        if enabledField[i]==1:
+            posField[i]+=velField[i]*dt/2 #verlet pos half step
+            a=ti.Vector([0.0,0.0])
+            pos=posField[i]
+            for j in range(majorNCurrent[None]): #accumulate forces
+                m=majorMassField[j]
+                tpos=majorPosField[j]
+                d=tpos-pos
+                r=d.norm()
+                if r<majorRadii[j]*sH:
+                    enabledField[i]=ti.u8(0)
+                a+=m*G*d/(r*r*r)
+            velField[i]+=a*dt #velocity verlet full step
+            posField[i]+=velField[i]*dt/2 #verlet pos half step
+
+@ti.kernel
+def stepMajors():
+    for i in range(majorNCurrent[None]):
+        majorPosField[i]+=majorVelField[i]*dt/2 #verlet pos half step 
+        #done independent of main force loop to avoid race conditions
+    for i in range(majorNCurrent[None]):
+        pos=majorPosField[i]
+        a=ti.Vector([0.0,0.0])
+        for j in range(majorNCurrent[None]): #force accumulate
+            if i!=j:
+                tpos=majorPosField[j]
+                m=majorMassField[j]
+                d=tpos-pos
+                r=d.norm()+e
+                a+=m*G*d/(r*r*r)
+        majorVelField[i]+=a*dt
+    for i in range(majorNCurrent[None]): #verlet pos half step
+        majorPosField[i]+=majorVelField[i]*dt/2 #same as first one
+
+@ti.func
+def rainFunc(x: ti.int32) -> ti.f32:
+    x=ti.cast(x,ti.f32)
+    y=(x+1)**2 /rParam[None]
+    return y
+
+
+pixels=ti.Vector.field(3,dtype=ti.f32,shape=(sW,sH))
+drawMajorPos=ti.Vector.field(2,dtype=ti.f32,shape=majorN)
+drawMajorRadii=ti.field(dtype=ti.f32,shape=majorN)
+@ti.kernel
+def renderImg(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32), rainbowMode: ti.int32):
+    center=ti.Vector([sW/2,sH/2])
+    cam=ti.Vector([off[0]*sW,off[1]*sH])
+    for i in range(particleN):
+        if enabledField[i]==1:
+            pos=posField[i]
+            drawPos=(pos-center+cam)*zoom+center #convert world space to screen space
+            x=ti.cast(drawPos[0],ti.int64)
+            y=ti.cast(drawPos[1],ti.int64)
+            if x>0 and y>0 and x<sW and y<sH:
+                if rainbowMode==1:
+                    c=ti.Vector([0.0,0.0,0.0])
+                    s=velField[i].norm()
+                    if s<rainFunc(1)*rSpMult[None]:
+                        c=ti.Vector([1,0.2,0.0])
+                    elif s<rainFunc(2)*rSpMult[None]:
+                        c=ti.Vector([1,0.6,0.0])
+                    elif s<rainFunc(3)*rSpMult[None]:
+                        c=ti.Vector([1,1,0.0])
+                    elif s<rainFunc(4)*rSpMult[None]:
+                        c=ti.Vector([0.0,1,0.20])
+                    elif s<rainFunc(5)*rSpMult[None]:
+                        c=ti.Vector([0.0,0.6,0.9])
+                    elif s<rainFunc(6)*rSpMult[None]:
+                        c=ti.Vector([0.6,0.0,1])
+                    else:
+                        c=ti.Vector([1,0.0,1])
+                    pixels[x,y]=c
+                else:
+                    pixels[x,y]=particleColor #set pixel color
+    for i in range(majorNCurrent[None]):
+        p=(majorPosField[i]-center+cam)*zoom+center #convert world space to screen space
+        drawMajorPos[i]=ti.Vector([p[0]/sW,p[1]/sH]) #set vector in field
+        drawMajorRadii[i]=majorRadii[i]*zoom #sale radius by zoom
+
+@ti.kernel
+def plotTrajectories(zoom: ti.f32, off: ti.types.vector(2,dtype=ti.f32)):
+    for i in range(majorNCurrent[None]): #set temp vectors
+        trajPos[i]=majorPosField[i]
+        trajVel[i]=majorVelField[i]
+    ti.loop_config(serialize=True) #serialize main loop
+    for s in range(steps):
+        ti.loop_config(serialize=False)
+        for i in range(majorNCurrent[None]): #verlet pos half step
+            trajPos[i]+=trajVel[i]*dtT/2
+            trajPosBckp[i]=trajPos[i] #copy positions to backup field
+        ti.loop_config(serialize=False)
+        for i in range(majorNCurrent[None]):
+            pos=trajPosBckp[i]
+            a=ti.Vector([0.0,0.0])
+            for j in range(majorNCurrent[None]): #force accumulate
+                if i!=j:
+                    tpos=trajPos[j]
+                    d=tpos-pos
+                    r=d.norm()+e
+                    m=majorMassField[j]
+                    a+=m*G*d/(r*r*r)
+            trajVel[i]+=a*dtT
+            trajPosBckp[i]+=trajVel[i]*dtT/2 #only update backup to avoid race conditions
+            trajectories[s,i]=trajPosBckp[i] #add to trajectories
+        ti.loop_config(serialize=False)
+        for i in range(majorNCurrent[None]):
+            trajPos[i]=trajPosBckp[i] #copy backup positions to projected position
+    center=ti.Vector([sW/2,sH/2])
+    cam=ti.Vector([off[0]*sW,off[1]*sH])
+    for s in range(steps):
+        ti.loop_config(serialize=False)
+        for i in range(majorNCurrent[None]):
+            p=(trajectories[s,i]-center+cam)*zoom+center #convert to screen space
+            p=ti.Vector([p[0]/sW,p[1]/sH])
+            vertices[s*majorN+i]=p
+
+@ti.kernel
+def addBodyN(pos: ti.types.vector(2,dtype=ti.f32), 
+             vel: ti.types.vector(2,dtype=ti.f32), 
+             mass: ti.f32, rad: ti.f32, 
+             color: ti.types.vector(3,dtype=ti.f32), 
+             off: ti.types.vector(2,dtype=ti.f32), zoom: ti.f32):
+    q=majorNCurrent[None]
+    center=ti.Vector([sW/2,sH/2])
+    cam=ti.Vector([off[0]*sW,off[1]*sH])
+    pixelPos = ti.Vector([pos[0]*sW, pos[1]*sH]) #convert to screen space
+    p=(pixelPos-center)/zoom +center-cam
+    majorPosField[q]=p #add values to major fields
+    majorVelField[q]=vel
+    majorMassField[q]=mass
+    majorRadii[q]=rad
+    majorColors[q]=color
+    for s in range(steps): 
+        trajColors[s*majorN+q]=color
+    majorNCurrent[None]+=1
+
+@ti.kernel
+def newBodyTrajectory(pos: ti.types.vector(2,dtype=ti.f32), 
+                      vel: ti.types.vector(2,dtype=ti.f32), 
+                      off: ti.types.vector(2,dtype=ti.f32), zoom: ti.f32):
+    center=ti.Vector([sW/2,sH/2])
+    cam=ti.Vector([off[0]*sW,off[1]*sH])
+    pixelPos = ti.Vector([pos[0]*sW, pos[1]*sH]) #convert to world space
+    p=(pixelPos-center)/zoom +center-cam
+    posTemp=p
+    velTemp=vel
+    ti.loop_config(serialize=True) #same loop as major trajectories
+    for s in range(steps):
+        posTemp+=velTemp*dtT/2 #position doesnt need to be updated in seperate loop, major body trajectories not affected
+        a=ti.Vector([0.0,0.0])
+        for i in range(majorNCurrent[None]):
+            m=majorMassField[i]
+            tpos=trajectories[s,i]
+            d=tpos-posTemp
+            r=d.norm()+e
+            a+=d*m*G/(r*r*r)
+        velTemp+=a*dtT
+        posTemp+=velTemp*dtT/2
+        trajN[s]=posTemp
+    for s in range(steps):
+        p=(trajN[s]-center+cam)*zoom+center #convert back to screen space for drawing
+        p=ti.Vector([p[0]/sW,p[1]/sH])
+        trajN[s]=p
         
-        zoomInv=1/zoom
-        #physics logic
-        createCodes()
-        radixSortController()
-        createTree()
-        massBoundAllocateController()
-        forceAccumulate()
-        #draw logic
-        pixelField.fill(0)
-        to_screen(zoom, offset)
-        if drawMode==0:
-            drawDensity(zoomInv)
-        elif drawMode==1:
-            countField.fill(0)
-            drawVelocity()
+#camera and control variables
+zoom=0.95
+moveS=0.01
+offset=ti.Vector([0.0,0.0])
+#booleans for body creation and pausing
+body=True
+LMB=False
+paused=False
+esc=False
+
+sqrt2=1.41421356
+init()
+
+#Sensitivity scales and labels
+camScale=tk.Scale(root,from_=25,to=400,orient='horizontal')
+camScale.grid(row=15,column=1,columnspan=3)
+camLabel=tk.Label(root,text="Camera Sensitivity %")
+camLabel.grid(row=15,column=0)
+createScale=tk.Scale(root,from_=1,to=1000,orient='horizontal')
+createScale.grid(row=16,column=1,columnspan=3)
+createLabel=tk.Label(root,text="Creation Sensitivity %\n(     ⬆️⬇️)")
+createLabel.grid(row=16,column=0)
+camScale.set(100)
+createScale.set(100)
+
+rScale=tk.Scale(root,from_=1,to=10000,orient='horizontal')
+rScale.grid(row=17,column=1,columnspan=3)
+rLabel=tk.Label(root,text="Rainbow Speed Mult")
+rLabel.grid(row=17,column=0)
+
+rPScale=tk.Scale(root,from_=500,to=2500,orient='horizontal')
+rPScale.grid(row=18,column=1,columnspan=3)
+rPLabel=tk.Label(root,text="Rainbow Scale")
+rPLabel.grid(row=18,column=0)
+
+rScale.set(1000)
+rPScale.set(1500)
+
+while window.running:
+    root.update_idletasks()
+    root.update()
+
+    camSense=camScale.get()
+    createSense=createScale.get() #*1e20 #for irl masses
+    rSpMult[None]=rScale.get()/1000
+    rParam[None]=rPScale.get()/100
+
+    window.get_events()
+    #ui, pausing and creation
+    with gui.sub_window("Toggles", 0.,0, 0.1, 0.12):
+        if not paused:
+            if gui.button("Pause"):
+                esc=True
+                paused=True
         else:
-            countField.fill(0)
-            drawHybrid(zoomInv)
-        if invertOn:
-            invert()
-        canvas.set_image(imgField)
-        window.show()
-        if recording: 
-            createRecorderFrame()
-            frame=recordFrame.to_numpy()
-            ffmpeg.stdin.write(memoryview(frame))
+            if gui.button("Unpause"):
+                paused=False
+                esc=True
+        if body:
+            if gui.button("Disable Creation"):
+                body=False
+                esc=True
+        else:
+            if gui.button("Enable Creation"):
+                body=True
+                esc=True
+        if not rainbowMode:
+            if gui.button("Rainbow On"):
+                esc=True
+                rainbowMode=True
+        else:
+            if gui.button("Rainbow Off"):
+                rainbowMode=False
+                esc=True
 
-init(preset,k,k2,k3,k4)
-sim()
-if recording:
-    ffmpeg.stdin.close()
-    ffmpeg.wait()
+    #camera movement
+    if window.is_pressed('k'):
+        zoom /= 1.05**(camSense/100)
+    if window.is_pressed('i'):
+        zoom *= 1.05**(camSense/100)
+    if window.is_pressed('w'):
+        offset[1]-=camSense/100*moveS/zoom/sH*1000
+    if window.is_pressed('s'):
+        offset[1]+=camSense/100*moveS/zoom/sH*1000
+    if window.is_pressed('a'):
+        offset[0]+=camSense/100*moveS/zoom/sW*1000
+    if window.is_pressed('d'):
+        offset[0]-=camSense/100*moveS/zoom/sW*1000    
 
-#ti.profiler.print_kernel_profiler_info()
+    #scale keybinds
+    if window.is_pressed(ti.ui.UP):
+        createScale.set(createSense+10)
+    if window.is_pressed(ti.ui.DOWN):
+        createScale.set(createSense-10)
+    if majorNCurrent[None]>=majorN and body:
+        body=False #disable if major cap reached
+    offset.normalized() #set speed of camera to 1
+
+    if not paused:
+        #physics step if not paused
+        stepParticles()
+        stepMajors()
+    #render
+    pixels.fill(0) #clear render
+    r=0
+    if rainbowMode:
+        r=1
+    renderImg(zoom,offset,r)
+    plotTrajectories(zoom, offset)
+
+    #body creation logic
+    if window.is_pressed(ti.ui.LMB) and (body) and (not esc):
+        cursor=ti.Vector(window.get_cursor_pos())
+        if not LMB: #on the first frame of the click
+            LMB=True
+            colorN=tuple(majorColors[majorNCurrent[None]]) #convert color to tuple
+            posN=cursor #set position
+        else:
+            velN=posN-cursor #set velocity
+            velN*=10*createSense/100
+            #creation controls
+            if window.is_pressed('t'):
+                massN+=createSense/100*10
+            if window.is_pressed('g'):
+                massN-=createSense/100*10
+                massN=max(0,massN)
+            if window.is_pressed('h'):
+                radN+=createSense/100/1000
+            if window.is_pressed('f'):
+                radN-=createSense/100/1000
+                radN=max(0,radN)
+            if window.is_pressed(ti.ui.ESCAPE):
+                esc=True #cancel
+            newBodyTrajectory(posN,velN,offset,zoom) #plot trajectory
+        drawPosN[0]=posN #set draw position
+    elif LMB:
+        LMB=False #reset flag
+        if not esc: #if not cancelled add body
+            if radN>0:
+                addBodyN(posN,velN,massN,radN,ti.Vector(colorN),offset,zoom)
+            #reset variables
+            posN=ti.Vector([0.0,0.0])
+            drawPosN[0]=posN
+            velN=ti.Vector([0.0,0.0])
+            massN=0
+            radN=0
+            colorN=ti.Vector([0,0,0])
+            trajN.fill(0)
+    if not window.is_pressed(ti.ui.LMB):
+        esc=False #reset flag
+        posN=ti.Vector([0.0,0.0])
+        drawPosN[0]=posN
+        velN=ti.Vector([0.0,0.0])
+        massN=0
+        radN=0
+
+    #draw
+    canvas.set_image(pixels)
+    canvas.circles(vertices,radius=0.001,per_vertex_color=trajColors)
+    canvas.circles(drawMajorPos,1,per_vertex_radius=drawMajorRadii,per_vertex_color=majorColors)
+    if LMB and colorN!=(0,0,0): #draw created body
+        canvas.circles(drawPosN,radius=radN*zoom,color=colorN)
+        canvas.circles(trajN,radius=0.001,color=colorN)
+    
+    #info boxes
+    with gui.sub_window("Creation Menu", 0.2,0, 0.1, 0.12):
+        gui.text(f"Mass: {massN}")
+        gui.text(f"Radius: {radN}")
+        gui.text(f"Velocity: {velN.norm()}")
+    with gui.sub_window("Controls: ", 0.1,0, 0.1, 0.12):
+        gui.text(
+            "Cam movement: WASD\n" \
+            "Zoom: IK\n" \
+            "Creation: hold LMB\n" \
+            "- Mass: TG\n" \
+            "- Radius: HF")
+    
+    #print(window.get_window_shape()) #use to find window size
+    #update display
+    window.show()
