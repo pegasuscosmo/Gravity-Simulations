@@ -7,7 +7,7 @@ static_ffmpeg.add_paths()
 import subprocess
 
 #simulation parameters
-recording=True
+recording=False
 #   particles
 n=2000000
 totalM=5000000
@@ -19,12 +19,13 @@ theta=1 #acceptance angle, larger -> more performance, less accuracy
 eps=1e0 #smoothing
 #   generation
 preset=3
-k=0.3
-k2=3
-k3=0.4
+k=1
+k2=-1
+k3=0.2
 k4=0
-spinMult=2.5
+spinMult=2
 drawScale=100
+
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
 #preset 1: circle generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), has spin
@@ -34,20 +35,36 @@ drawScale=100
 #drawScale - generation bounding box size
 #k,k2,k3,k4 - generation parameters, defined above
 
+
 #   visual
 #       window
 windowW=1920
 windowH=1000
 #       colors
+drawMode=0 #0=density, 1=velocity, 2=hybrid
+#           All Modes
 pc=0.1 #brightness sensitivity
 pb=3 #bloom
 alphaC=1.2 #zoom bright scale    ^ =zoom in ^ brightness  v = zoom in v brightness
 gammaC=1 #contrast
 gammaB=1 #contrast of bloom
+midC=0.4
+#           Density Mode
 c1=ti.Vector([0.8,0.8,0.5]) #high density
 c2=ti.Vector([0.7,0.4,0.6]) #mid density
 c3=ti.Vector([0.3,0.2,0.7])#low density
-midC=0.3
+#           Velocity Mode
+g1=ti.Vector([1.0,1.0,0.9]) #high speed
+g2=ti.Vector([0.9,0.6,0.3]) #mid speed
+g3=ti.Vector([0.7,0.0,0.0])#low speed
+damp=5000 #affects color
+#           Hybrid Mode
+h1=ti.Vector([1.0,1.0,0.9]) #high speed
+h2=ti.Vector([0.1,0.7,1.0]) #mid speed
+h3=ti.Vector([0.2,0.4,0.9])#low speed
+damp2=100 #affects brightness
+
+
 
 
 #fields
@@ -125,8 +142,6 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32, k4: ti.f32):
     for i in range(n):
         posField[i]+=o
 
-
-
 #chatgpt, adapted to taichi
 @ti.func
 def splitBy1(x: ti.uint64) -> ti.uint64:
@@ -156,7 +171,6 @@ def maskBits(code,k):
 #end cite
 
 scale=1<<30
-
 @ti.kernel
 def createCodes(): #create morton codes   
     maxPosX=0.0
@@ -175,7 +189,6 @@ def createCodes(): #create morton codes
         yu=ti.cast(yint,ti.uint64)
         codeField[i]=(splitBy1(xu)|(splitBy1(yu)<<1)) #create morton code
         pointerField[i]=i
-
 # morton coding quick explanation
 # morton codes are a 1d representation of n-dimensional positions that preserve locality
 # example -
@@ -193,19 +206,18 @@ def createCodes(): #create morton codes
 # which is a space filling curve that preserves locality, hence why morton codes themselves also preserve locality
 # this implicitly creates a quadtree, which is necessary for Barnes Hut
 
+#radix sort config
 bitLength=4
 passes=64//bitLength
 l=2**bitLength
-
-
-
+#element fields
 sums=ti.field(dtype=ti.int32,shape=l)
 sums2=ti.field(dtype=ti.int32,shape=l)
 prefixes=ti.field(dtype=ti.int32,shape=l)
 bitString=ti.field(dtype=ti.int32,shape=n)
 sortedCodes=ti.field(dtype=ti.u64,shape=n)
 sortedPointerField=ti.field(dtype=ti.int32,shape=n)
-
+#block fields and constants
 blockSize=64
 blockNum=math.ceil(n/blockSize)
 localRank=ti.field(dtype=ti.int32,shape=n)
@@ -213,9 +225,6 @@ blockCounts=ti.field(dtype=ti.int32,shape=(blockNum,l))
 blockCounts2=ti.field(dtype=ti.int32,shape=(blockNum,l))
 blockPrefixes=ti.field(dtype=ti.int32,shape=(blockNum,l))
 logBlockNum=math.ceil(math.log2(blockNum))
-
-groupSize=256
-groupNum=math.ceil(blockNum/groupSize)
 
 
 @ti.kernel
@@ -242,6 +251,7 @@ def radixPassPart1(p: ti.int32):
             if bitString[k]==bitString[i]:
                 rank+=1
         localRank[i]=rank
+
 def prefixSumBlocks():
     for w in range(logBlockNum):
         d=1<<w
@@ -266,6 +276,7 @@ def getBlockPrefixes():
         i=j+1
         for b in range(l):
             blockPrefixes[i,b]=blockCounts[j,b]
+
 @ti.kernel
 def prefixSumCounts():
     ti.loop_config(serialize=True)
@@ -281,6 +292,7 @@ def prefixSumCounts():
     for j in range(l-1):
         i=j+1
         prefixes[i]=sums[j]
+
 @ti.kernel
 def scatter():
     ti.loop_config(serialize=False)
@@ -371,14 +383,12 @@ nodeN=2*n-1
 nodeRangeField=ti.Vector.field(2,dtype=ti.int32, shape=nodeN,)
 nodeParentField=ti.field(dtype=ti.int32, shape=nodeN)
 nodeChildField=ti.Vector.field(2,dtype=ti.int32, shape=nodeN)
-
 nodeMassField=ti.field(dtype=ti.f32,shape=nodeN)
 nodeCOMField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN)
 nodeABoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #min x,y
 nodeBBoundField=ti.Vector.field(2,dtype=ti.f32,shape=nodeN) #max x,y
 
 reversePointerField=ti.field(dtype=ti.int32,shape=n)
-
 @ti.kernel
 def createTree(): #create the binary LVBH tree
     for i in range(2*n-1):#reset fields
@@ -434,7 +444,6 @@ def createTree(): #create the binary LVBH tree
 #the tree created looks like this (somehow):
 # 0,  1,  2,  ...  ,  n-1  ,  n  ,  n+1,  n+2,  ...  ,  2*n-2
 # leaf nodes                 root   internal nodes
-
 
 #fields for mass and bound allocation
 set=ti.field(dtype=ti.int32,shape=n)
@@ -505,7 +514,6 @@ def massBoundAllocateController():
     while length>0:
         swap()
         length=massBoundAllocate()
-
 #quick explanation of the allocation logic
 # nodes require their childrens masses, COM, and bounds to be calculated, 
 # which in turn need their own children and so on
@@ -514,7 +522,6 @@ def massBoundAllocateController():
 # the node is added to nextSet, and after all nodes in the current set have finished, the
 # nodes in nextSet are transferred to the current set to be calculated.
 # this continues until nextSet is empty
-
 
 #stacks for each particle
 maxStackDepth=128
@@ -534,7 +541,6 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
             #setup
             stackTop[i]-=1
             node=stack[i,stackTop[i]]
-            
             w=nodeBBoundField[node]-nodeABoundField[node]
             maxW=ti.max(w[0],w[1])
             nodePos=nodeCOMField[node]
@@ -543,7 +549,6 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
             L=nodeRangeField[node][0]
             R=nodeRangeField[node][1]
             containI=(L<=i and i<=R)
-            
             #BH gravity
             if node<n:
                 if node!=i:
@@ -565,7 +570,6 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
         velField[sortedPointerField[i]]+=accelVec*dt
     for i in range(n):    
         posField[i]+=velField[i]*dt/2
-
 #quick explanation time again!
 # each particle has their own stack, which starts with the root node
 # if the nodes largest side length divided by the distance from the 
@@ -575,9 +579,9 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
 # if the node isn't accepted, it adds its children to the stack. 
 # This in effect creates a depth first search for nodes that satisfy s/d<theta
 
-
 window = ti.ui.Window("Barnes Hut Sim", (windowW, windowH),pos=(0,40))
 canvas = window.get_canvas()
+gui = window.get_gui()
 
 posDraw = ti.Vector.field(2, dtype=ti.f32, shape=n)
 
@@ -637,6 +641,111 @@ def drawDensity(zoomInv: ti.f32):
         else:
             imgField[i1,i2]=ti.Vector([0,0,0])
 
+countField=ti.field(dtype=ti.int32,shape=(windowW,windowH))
+@ti.kernel
+def drawVelocity():
+    for i in range(n):
+            pos=posDraw[i]
+            x=ti.cast(pos[0],ti.int32)
+            y=ti.cast(pos[1],ti.int32)
+            if x<windowW and x>0 and y>0 and y<windowH:
+                a=velField[i].norm_sqr()
+                ti.atomic_add(pixelField[x,y],a)
+                ti.atomic_add(countField[x,y],1)
+                if x+1<windowW:
+                    ti.atomic_add(pixelField[x+1,y],0.15*a)
+                    ti.atomic_add(countField[x+1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x+1,y+1],0.05*a)
+                        ti.atomic_add(countField[x+1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x+1,y-1],0.05*a)
+                        ti.atomic_add(countField[x+1,y-1],1)
+                if x-1>0:
+                    ti.atomic_add(pixelField[x-1,y],0.15*a)
+                    ti.atomic_add(countField[x+-1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x-1,y+1],0.05*a)
+                        ti.atomic_add(countField[x-1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x-1,y-1],0.05*a)
+                        ti.atomic_add(countField[x-1,y-1],1)
+                if y+1<windowH:
+                    ti.atomic_add(pixelField[x,y+1],0.15*a)
+                    ti.atomic_add(countField[x,y+1],1)
+                if y-1>0:
+                    ti.atomic_add(pixelField[x,y-1],0.15*a)
+                    ti.atomic_add(countField[x,y-1],1)
+    for i1,i2 in pixelField:
+            if pixelField[i1,i2]!=0:
+                v=pixelField[i1,i2]/countField[i1,i2]/damp
+                v2=pixelField[i1,i2]/countField[i1,i2]/damp
+                b=ti.pow(1-ti.exp(-pc*v),gammaC)
+                bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
+                t=(b-midC)/(1-midC)
+                c=g2*(1-t)+g1*t #smoothing logic and above variables modified from chat gpt
+                if b<midC:
+                    t=b/midC
+                    c=g3*(1-t)+g2*t
+                imgField[i1,i2]=c*bb
+            else:
+                imgField[i1,i2]=ti.Vector([0,0,0])
+
+@ti.kernel
+def drawHybrid(zoomInv: ti.f32):
+    for i in range(n):
+            pos=posDraw[i]
+            x=ti.cast(pos[0],ti.int32)
+            y=ti.cast(pos[1],ti.int32)
+            if x<windowW and x>0 and y>0 and y<windowH:
+                a=velField[i].norm_sqr()
+                ti.atomic_add(pixelField[x,y],a)
+                ti.atomic_add(countField[x,y],1)
+                if x+1<windowW:
+                    ti.atomic_add(pixelField[x+1,y],0.15*a)
+                    ti.atomic_add(countField[x+1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x+1,y+1],0.05*a)
+                        ti.atomic_add(countField[x+1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x+1,y-1],0.05*a)
+                        ti.atomic_add(countField[x+1,y-1],1)
+                if x-1>0:
+                    ti.atomic_add(pixelField[x-1,y],0.15*a)
+                    ti.atomic_add(countField[x+-1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x-1,y+1],0.05*a)
+                        ti.atomic_add(countField[x-1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x-1,y-1],0.05*a)
+                        ti.atomic_add(countField[x-1,y-1],1)
+                if y+1<windowH:
+                    ti.atomic_add(pixelField[x,y+1],0.15*a)
+                    ti.atomic_add(countField[x,y+1],1)
+                if y-1>0:
+                    ti.atomic_add(pixelField[x,y-1],0.15*a)
+                    ti.atomic_add(countField[x,y-1],1)
+    for i1,i2 in pixelField:
+            if pixelField[i1,i2]!=0:
+                v=pixelField[i1,i2]/countField[i1,i2]/damp
+                v2=countField[i1,i2]/damp2 *ti.pow(zoomInv,2)
+                b=ti.pow(1-ti.exp(-pc*v),gammaC)
+                bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
+                t=(b-midC)/(1-midC)
+                c=h2*(1-t)+h1*t #smoothing logic and above variables modified from chat gpt
+                if b<midC:
+                    t=b/midC
+                    c=h3*(1-t)+h2*t
+                imgField[i1,i2]=c*bb
+            else:
+                imgField[i1,i2]=ti.Vector([0,0,0])
+
+@ti.kernel
+def invert():
+    for i1,i2 in pixelField:
+        if imgField[i1,i2][0]!=0 or imgField[i1,i2][1]!=0 or imgField[i1,i2][2]!=0:
+            imgField[i1,i2]=ti.Vector([1,1,1])-imgField[i1,i2]
+
 if recording:
     ffmpeg = subprocess.Popen([
         "ffmpeg",
@@ -673,6 +782,8 @@ def createRecorderFrame():
         ])
 
 def sim():
+    global drawMode
+    invertOn=False
     zoom=1.7
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
@@ -696,6 +807,24 @@ def sim():
             offset[0]+=zoom*(drawScale/100)
         if window.is_pressed('d'):
             offset[0]-=zoom*(drawScale/100)
+
+        with gui.sub_window("Draw Mode", 0.,0, 0.05, 0.075):
+            if drawMode==0:
+                if gui.button("Velocity"):
+                    drawMode=1
+            elif drawMode==1:
+                if gui.button("Hybrid"):
+                    drawMode=2
+            else:
+                if gui.button("Density"):
+                    drawMode=0
+            if invertOn:
+                if gui.button("Normal"):
+                    invertOn=not invertOn
+            else:
+                if gui.button("Invert"):
+                    invertOn=not invertOn
+        
         zoomInv=1/zoom
         #physics logic
         createCodes()
@@ -706,7 +835,16 @@ def sim():
         #draw logic
         pixelField.fill(0)
         to_screen(zoom, offset)
-        drawDensity(zoomInv)
+        if drawMode==0:
+            drawDensity(zoomInv)
+        elif drawMode==1:
+            countField.fill(0)
+            drawVelocity()
+        else:
+            countField.fill(0)
+            drawHybrid(zoomInv)
+        if invertOn:
+            invert()
         canvas.set_image(imgField)
         window.show()
         if recording: 
@@ -719,5 +857,3 @@ sim()
 if recording:
     ffmpeg.stdin.close()
     ffmpeg.wait()
-
-#ti.profiler.print_kernel_profiler_info()
