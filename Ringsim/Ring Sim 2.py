@@ -7,7 +7,7 @@ static_ffmpeg.add_paths()
 import subprocess
 
 #simulation parameters
-recording=False
+recording=True
 #   particles
 n=2000000
 totalM=5000000
@@ -16,16 +16,16 @@ m=totalM/n
 G=1
 dt=0.001
 theta=1 #acceptance angle, larger -> more performance, less accuracy
-eps=1e-1 #smoothing
+eps=1e0 #smoothing
 #   generation
-preset=2
+preset=3
 k=1
-k2=3
-k3=0.6
+k2=-1
+k3=0.2
 k4=0
-spinMult=1.2
+spinMult=2
 drawScale=100
-0
+
 
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
@@ -41,23 +41,28 @@ drawScale=100
 windowW=1920
 windowH=1000
 #       colors
-drawMode=1 #0=density, 1=velocity
-
+drawMode=0 #0=density, 1=velocity, 2=hybrid
+#   All Modes
 pc=0.1 #brightness sensitivity
 pb=3 #bloom
 alphaC=1.2 #zoom bright scale    ^ =zoom in ^ brightness  v = zoom in v brightness
 gammaC=1 #contrast
 gammaB=1 #contrast of bloom
-
+midC=0.4
+#   Density Mode
 c1=ti.Vector([0.8,0.8,0.5]) #high density
 c2=ti.Vector([0.7,0.4,0.6]) #mid density
 c3=ti.Vector([0.3,0.2,0.7])#low density
-midC=0.3
-
+#   Velocity Mode
 g1=ti.Vector([1.0,1.0,0.9]) #high speed
 g2=ti.Vector([0.9,0.6,0.3]) #mid speed
 g3=ti.Vector([0.7,0.0,0.0])#low speed
-damp=5000
+damp=5000 #affects color
+#   Hybrid Mode
+h1=ti.Vector([1.0,1.0,0.9]) #high speed
+h2=ti.Vector([0.7,0.4,1.0]) #mid speed
+h3=ti.Vector([0.3,0.3,0.8])#low speed
+damp2=100 #affects brightness
 
 
 #fields
@@ -697,6 +702,62 @@ def drawVelocity():
                 imgField[i1,i2]=c*bb
             else:
                 imgField[i1,i2]=ti.Vector([0,0,0])
+
+@ti.kernel
+def drawHybrid(zoomInv: ti.f32):
+    for i in range(n):
+            pos=posDraw[i]
+            x=ti.cast(pos[0],ti.int32)
+            y=ti.cast(pos[1],ti.int32)
+            if x<windowW and x>0 and y>0 and y<windowH:
+                a=velField[i].norm_sqr()
+                ti.atomic_add(pixelField[x,y],a)
+                ti.atomic_add(countField[x,y],1)
+                if x+1<windowW:
+                    ti.atomic_add(pixelField[x+1,y],0.15*a)
+                    ti.atomic_add(countField[x+1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x+1,y+1],0.05*a)
+                        ti.atomic_add(countField[x+1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x+1,y-1],0.05*a)
+                        ti.atomic_add(countField[x+1,y-1],1)
+                if x-1>0:
+                    ti.atomic_add(pixelField[x-1,y],0.15*a)
+                    ti.atomic_add(countField[x+-1,y],1)
+                    if y+1<windowH:
+                        ti.atomic_add(pixelField[x-1,y+1],0.05*a)
+                        ti.atomic_add(countField[x-1,y+1],1)
+                    if y-1>0:
+                        ti.atomic_add(pixelField[x-1,y-1],0.05*a)
+                        ti.atomic_add(countField[x-1,y-1],1)
+                if y+1<windowH:
+                    ti.atomic_add(pixelField[x,y+1],0.15*a)
+                    ti.atomic_add(countField[x,y+1],1)
+                if y-1>0:
+                    ti.atomic_add(pixelField[x,y-1],0.15*a)
+                    ti.atomic_add(countField[x,y-1],1)
+    for i1,i2 in pixelField:
+            if pixelField[i1,i2]!=0:
+                v=pixelField[i1,i2]/countField[i1,i2]/damp
+                v2=countField[i1,i2]/damp2 *ti.pow(zoomInv,2)
+                b=ti.pow(1-ti.exp(-pc*v),gammaC)
+                bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
+                t=(b-midC)/(1-midC)
+                c=h2*(1-t)+h1*t #smoothing logic and above variables modified from chat gpt
+                if b<midC:
+                    t=b/midC
+                    c=h3*(1-t)+h2*t
+                imgField[i1,i2]=c*bb
+            else:
+                imgField[i1,i2]=ti.Vector([0,0,0])
+
+@ti.kernel
+def invert():
+    for i1,i2 in pixelField:
+        if imgField[i1,i2][0]!=0 or imgField[i1,i2][1]!=0 or imgField[i1,i2][2]!=0:
+            imgField[i1,i2]=ti.Vector([1,1,1])-imgField[i1,i2]
+
 if recording:
     ffmpeg = subprocess.Popen([
         "ffmpeg",
@@ -734,6 +795,7 @@ def createRecorderFrame():
 
 def sim():
     global drawMode
+    invertOn=False
     zoom=1.7
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
@@ -758,13 +820,22 @@ def sim():
         if window.is_pressed('d'):
             offset[0]-=zoom*(drawScale/100)
 
-        with gui.sub_window("Draw Mode", 0.,0, 0.1, 0.12):
+        with gui.sub_window("Draw Mode", 0.,0, 0.05, 0.075):
             if drawMode==0:
                 if gui.button("Velocity"):
                     drawMode=1
+            elif drawMode==1:
+                if gui.button("Hybrid"):
+                    drawMode=2
             else:
                 if gui.button("Density"):
                     drawMode=0
+            if invertOn:
+                if gui.button("Normal"):
+                    invertOn=not invertOn
+            else:
+                if gui.button("Invert"):
+                    invertOn=not invertOn
         
         zoomInv=1/zoom
         #physics logic
@@ -781,6 +852,11 @@ def sim():
         elif drawMode==1:
             countField.fill(0)
             drawVelocity()
+        else:
+            countField.fill(0)
+            drawHybrid(zoomInv)
+        if invertOn:
+            invert()
         canvas.set_image(imgField)
         window.show()
         if recording: 
