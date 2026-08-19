@@ -37,12 +37,14 @@ Saturn Ring Sim
 
 Barnes Hut N Body (Optimized)
 - Similar to the first N Body sim, but optimized for parallelism, and uses more efficient tree construction/traversal
-- Color/brightness change by density
+- Color/brightness change by density, velocity, or both
 - standard velocity verlet integration
 - uses custom radix sort for performance improvement on GPU
+- Can record simulation and compile into a 60fps mp4
 - Controls:
   - WASD for movement
   - I/K to zoom in/out
+  - F to take screenshot
 
 Ring Sim 2
 - Remake of Ring Sim using Taichi parallelism/optimizations, allows for higher particle counts
