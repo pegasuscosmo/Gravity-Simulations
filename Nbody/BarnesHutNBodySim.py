@@ -14,23 +14,24 @@ totalM=5000000
 m=totalM/n
 #   physics
 G=1
-dt=0.001
+dt=0.002
 theta=1 #acceptance angle, larger -> more performance, less accuracy
 eps=1e0 #smoothing
 #   generation
 preset=3
-k=1
-k2=-1
-k3=0.2
-k4=0
-spinMult=2
+k=0.8
+k2=0
+k3=1
+k4=50
+k5=300
+spinMult=1.5
 drawScale=100
 
 #       generation manual
 #preset 0: square generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), no spin
 #preset 1: circle generation, k=random velocity amount, k2=inward velocity amount (scaled by distance), has spin
 #preset 2: galaxy generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance scaled spin multiplier, k4=core size (1=all core), has spin
-#preset 3: galaxy merger generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance between galaxy multiplier (k3=1 -> 3*drawScale), k4=galaxy vertical velocities, has spin
+#preset 3: galaxy merger generation, k=radial distribution power (<2 advised), k2=arm amount, k3=distance between galaxy multiplier (k3=1 -> 3*drawScale), k4=galaxy vertical velocities, k5=galaxy inward velocities, has spin
 #spin mult - flat multiplier on spin
 #drawScale - generation bounding box size
 #k,k2,k3,k4 - generation parameters, defined above
@@ -53,16 +54,19 @@ midC=0.4
 c1=ti.Vector([0.8,0.8,0.5]) #high density
 c2=ti.Vector([0.7,0.4,0.6]) #mid density
 c3=ti.Vector([0.3,0.2,0.7])#low density
+da=5 #damp color
+db=1.7 #damp brightness
 #           Velocity Mode
 g1=ti.Vector([1.0,1.0,0.9]) #high speed
 g2=ti.Vector([0.9,0.6,0.3]) #mid speed
 g3=ti.Vector([0.7,0.0,0.0])#low speed
-damp=5000 #affects color
+va=1750 #affects color
+vb=3 #damp brightness
 #           Hybrid Mode
-h1=ti.Vector([1.0,1.0,0.9]) #high speed
-h2=ti.Vector([0.1,0.7,1.0]) #mid speed
-h3=ti.Vector([0.2,0.4,0.9])#low speed
-damp2=100 #affects brightness
+h1=ti.Vector([0.5,0.8,0.9]) #high speed
+h2=ti.Vector([0.1,0.6,1.0]) #mid speed
+h3=ti.Vector([0.1,0.1,0.5])#low speed
+
 
 
 
@@ -74,7 +78,7 @@ velField=ti.Vector.field(2,dtype=ti.f32,shape=n) #xv,yv
 drawScaleInv=1/drawScale
 o=ti.Vector([drawScale*500,drawScale*500])
 @ti.kernel
-def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32, k4: ti.f32):
+def init():
     if preset==0: #square init
         for i in range(n):
             x=ti.random()*drawScale
@@ -138,7 +142,8 @@ def init(preset: ti.int32, k: ti.f32, k2: ti.int32, k3: ti.f32, k4: ti.f32):
                 d=ti.Vector([x,y])-gcenter
                 r=d.norm()
             posField[i]=ti.Vector([x,y])
-            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +ti.Vector([0,(ti.abs(g)/g) *k4])
+            gv=ti.Vector([-ti.abs(g)/g*k5,ti.abs(g)/g*k4])
+            velField[i]=ti.Vector([-d[1],d[0]])/r * ti.sqrt(G*totalM/2*r/(drawScale/4)**2)*spinMult/2 +gv
     for i in range(n):
         posField[i]+=o
 
@@ -527,11 +532,15 @@ def massBoundAllocateController():
 maxStackDepth=128
 stack=ti.field(dtype=ti.int32,shape=(n,maxStackDepth))
 stackTop=ti.field(dtype=ti.int32,shape=n)
+
+accelField=ti.field(dtype=ti.f32,shape=n)
 @ti.kernel
-def forceAccumulate(): #accelerate particles, velocity verlet integration
+def positionHalfStep():
     for i in range(n):
         posField[sortedPointerField[i]]+=velField[sortedPointerField[i]]*dt/2
         stackTop[i]=0
+@ti.kernel
+def forceAccumulate(): #accelerate particles, velocity verlet integration
     for i in range(n):
         stack[i,0]=n
         stackTop[i]=1
@@ -567,6 +576,7 @@ def forceAccumulate(): #accelerate particles, velocity verlet integration
                     else:
                         accel=G*nodeMassField[node]/(r*r)
                         accelVec+=accel*d/r
+        accelField[sortedPointerField[i]]=accelVec.norm_sqr()
         velField[sortedPointerField[i]]+=accelVec*dt
     for i in range(n):    
         posField[i]+=velField[i]*dt/2
@@ -628,8 +638,8 @@ def drawDensity(zoomInv: ti.f32):
                 ti.atomic_add(pixelField[x,y-1],0.25*a)
     for i1,i2 in pixelField:
         if pixelField[i1,i2]!=0:
-            v=pixelField[i1,i2]*ti.pow(zoomInv,alphaC)
-            v2=pixelField[i1,i2]*ti.pow(zoomInv,2)
+            v=pixelField[i1,i2]*ti.pow(zoomInv,alphaC)/da
+            v2=pixelField[i1,i2]*ti.pow(zoomInv,2)/db
             b=ti.pow(1-ti.exp(-pc*v),gammaC)
             bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
             t=(b-midC)/(1-midC)
@@ -677,9 +687,9 @@ def drawVelocity():
                     ti.atomic_add(pixelField[x,y-1],0.15*a)
                     ti.atomic_add(countField[x,y-1],1)
     for i1,i2 in pixelField:
-            if pixelField[i1,i2]!=0:
-                v=pixelField[i1,i2]/countField[i1,i2]/damp
-                v2=pixelField[i1,i2]/countField[i1,i2]/damp
+            if countField[i1,i2]!=0:
+                v=pixelField[i1,i2]/countField[i1,i2]/va
+                v2=pixelField[i1,i2]/countField[i1,i2]/vb
                 b=ti.pow(1-ti.exp(-pc*v),gammaC)
                 bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
                 t=(b-midC)/(1-midC)
@@ -726,9 +736,9 @@ def drawHybrid(zoomInv: ti.f32):
                     ti.atomic_add(pixelField[x,y-1],0.15*a)
                     ti.atomic_add(countField[x,y-1],1)
     for i1,i2 in pixelField:
-            if pixelField[i1,i2]!=0:
-                v=pixelField[i1,i2]/countField[i1,i2]/damp
-                v2=countField[i1,i2]/damp2 *ti.pow(zoomInv,2)
+            if countField[i1,i2]!=0:
+                v=pixelField[i1,i2]/countField[i1,i2]/va
+                v2=countField[i1,i2]/4/db *ti.pow(zoomInv,2)
                 b=ti.pow(1-ti.exp(-pc*v),gammaC)
                 bb=ti.pow(1-ti.exp(-pb*v2),gammaB)
                 t=(b-midC)/(1-midC)
@@ -783,11 +793,14 @@ def createRecorderFrame():
 
 def sim():
     global drawMode
+    maxFrames=-1
     invertOn=False
     zoom=1.7
     zoomInv=1/zoom
     offset=ti.Vector([0.0,0.0])
     offset-=o
+    f=0
+    j=0
     while window.running:
         window.get_events()
         #stop
@@ -827,6 +840,7 @@ def sim():
         
         zoomInv=1/zoom
         #physics logic
+        positionHalfStep()
         createCodes()
         radixSortController()
         createTree()
@@ -851,8 +865,16 @@ def sim():
             createRecorderFrame()
             frame=recordFrame.to_numpy()
             ffmpeg.stdin.write(memoryview(frame))
+        if window.is_pressed('f'):
+            createRecorderFrame()
+            ti.tools.imwrite(recordFrame,f"simScr{j}.png")
+            j+=1
+        f+=1
+        if maxFrames>0:
+            if f>maxFrames:
+                break
 
-init(preset,k,k2,k3,k4)
+init()
 sim()
 if recording:
     ffmpeg.stdin.close()
