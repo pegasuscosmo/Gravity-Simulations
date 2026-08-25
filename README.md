@@ -45,6 +45,7 @@ Barnes Hut N Body (Optimized)
   - WASD for movement
   - I/K to zoom in/out
   - F to take screenshot
+- 2M particle sim video: https://www.youtube.com/watch?v=dekreIWrQXQ
 
 Ring Sim 2
 - Remake of Ring Sim using Taichi parallelism/optimizations, allows for higher particle counts
