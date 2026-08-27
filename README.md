@@ -53,3 +53,18 @@ Ring Sim 2
   - Only dt, G, window resolution, and particle counts/major cap need to be edited in code 
 - No timewarp or random generation
 - Controls shown in UI
+
+Black Hole Renderer
+- I was making some black hole art and went "Hey I could code this" so yeah
+- Uses a=pos*(3M*h^2)/r^5 where h is the cross of the ray's position and velocity, instead of regular newtonian a=GM/r^2
+- Exports render in layers
+  - EHT: event horizon layer, white where a ray goes inside the event horizon and transparent when not
+  - FullRender: The full render
+  - LDRBase: white where a ray hits the accretion disk after passing the plane of the disk without hitting it at least once
+  - LDRMask: the texture values of LDRBase (used as a lumonisity mask of LDRBase)
+  - MDRBase: white where a ray hits the accretion disk without ever passing the plane of the disk
+  - MDRMask: the texture values of MDRBase (used as a luminosity mask of MDRBase)
+- Image saving requires user='' to be set to your desired downloads location (saves to Users\{user}\Downloads)
+- Rendering requires a texture image saved as "eeee2.jpeg" (can be changed, line 13), must be a square black and white image of width diskOR*res (can be changed, lines 10 and 12)
+- Movement using GUI
+- Currently working on a procedural noise texture to replace the texture image import. This should also help with the resolution of the disk up close
