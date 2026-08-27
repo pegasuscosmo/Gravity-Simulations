@@ -1,0 +1,249 @@
+#BH RENDERER
+import numpy as np
+from PIL import Image
+import taichi as ti
+ti.reset()
+ti.init(arch=ti.gpu,default_fp=ti.f32)
+user=''
+#BH
+M=1
+diskOR=16
+diskIR=7
+res=50
+img=Image.open(f"C:\\Users\\{user}\\Downloads\\eeee2.jpeg")
+color=ti.Vector([1,0.5,1,1])
+diskOpacity=1.0
+#cam
+screenW,screenH=1024,512
+camR=ti.field(dtype=ti.f32,shape=())
+theta=ti.field(dtype=ti.f32,shape=()) #radians
+camR[None]=30
+theta[None]=0.005
+camFocusDist=0.5
+#rays
+dtau=0.1
+maxSteps=10000
+#   hi res
+dtR=1
+sR=1
+hiResScaling=1
+HDscreenW=screenW*hiResScaling
+HDscreenH=screenH*hiResScaling
+
+#skybox
+skyImg=Image.open(f"C:\\Users\\{user}\\Downloads\\ffff2.jpeg")
+skyBoxX=-17
+skyBoxW=80
+skyBoxRes=20
+skyBoxOn=False
+
+pixels=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+pixelsReduced=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+rayCount=HDscreenW*HDscreenH
+rayPos=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
+rayDir=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
+rayKill=ti.field(dtype=ti.u8,shape=rayCount)
+rayToPixel=ti.Vector.field(2,dtype=ti.int32,shape=rayCount)
+
+diskOR2=diskOR*diskOR
+diskIR2=diskIR*diskIR
+
+#render exporting
+mainDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+lensDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+mainDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+lensDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+horizonRender=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+
+img_array = np.array(img)[:,:,0].astype(np.float32)/255.0
+texture=ti.field(dtype=ti.f32,shape=img_array.shape)
+texture.from_numpy(img_array)
+
+img_array2 = np.array(skyImg).astype(np.float32)/255.0
+skyBoxTexture=ti.Vector.field(4,dtype=ti.f32,shape=img_array2.shape[:2])
+skyBoxTexture.from_numpy(img_array2)
+
+@ti.kernel
+def textureCreate():
+    for x in range(2*diskOR*res):
+        for y in range(2*diskOR*res):
+            xu=x-diskOR*res
+            yu=y-diskOR*res
+            ru=ti.Vector([xu,yu]).norm()
+            texture[x,y]=1-ru/diskOR2+ti.random()/5
+
+@ti.func
+def passDiskPlane(y0,y1):
+    q=False
+    if y0*y1<=0:
+        q=True
+    return q
+@ti.func
+def checkHit(pos0,pos1):
+    x0=pos0[0]
+    y0=pos0[1]
+    z0=pos0[2]
+    x1=pos1[0]
+    y1=pos1[1]
+    z1=pos1[2]
+    q=-1
+    if passDiskPlane(y0,y1): #passes plane
+        W=y0/(y0-y1)
+        x=x0+W*(x1-x0)
+        z=z0+W*(z1-z0)
+        r=x*x+z*z
+        q=0
+        if r>diskIR2 and r<diskOR2: #hit
+            q=1
+    return q
+
+@ti.func
+def skyBoxCheckHit(pos0,pos1):
+    x0=pos0[0]
+    y0=pos0[1]
+    z0=pos0[2]
+    x1=pos1[0]
+    y1=pos1[1]
+    z1=pos1[2]
+    q=-1
+    x0s=x0-skyBoxX
+    x1s=x1-skyBoxX
+    y=0
+    z=0
+    if x0s*x1s<0:
+        W=x0s/(x0s-x1s)
+        y=y0+W*(y1-y0)
+        z=z0+W*(z1-z0)
+        q=1
+    return q,y,z
+
+@ti.kernel
+def rayInit():
+    cam=ti.Vector([camR[None]*ti.cos(theta[None]),camR[None]*ti.sin(theta[None]),0.0])
+    center=ti.Vector([0.0,0.0,0.0])
+
+    forward=(center-cam).normalized()
+
+    worldUp=ti.Vector([0.0,1.0,0.0])
+    right=forward.cross(worldUp).normalized()
+    up=right.cross(forward).normalized()
+
+    aspect=ti.cast(HDscreenW, ti.f32) / ti.cast(HDscreenH, ti.f32)
+    scale=0.7
+
+    for i in range(rayCount):
+        px=i%HDscreenW
+        py=i//HDscreenW
+        u=(ti.cast(px, ti.f32)+0.5)/ti.cast(HDscreenW, ti.f32)*2-1
+        v=(ti.cast(py, ti.f32)+0.5)/ti.cast(HDscreenH, ti.f32)*2 -1
+        u*=aspect*scale
+        v*=scale
+        rayToPixel[i] = ti.Vector([px, py])
+        rayPos[i]=cam
+        rayDir[i]=(forward+ right*u + up*v).normalized()
+        rayKill[i]=0
+
+
+@ti.kernel
+def rayLoop(hiRes: ti.int32):
+    for i in range(rayCount):
+        h=rayPos[i].cross(rayDir[i])
+        h2=h.dot(h)
+        pos=rayPos[i]
+        passed=0
+        q=0
+        j=0
+        px=rayToPixel[i]
+        pxX=px[0]
+        pxZ=px[1]
+        S=maxSteps
+        dt=dtau
+        if hiRes==1:
+            S=maxSteps*sR
+            dt=dtau/dtR
+        for s in range(S):
+            if rayKill[i]==0:
+                pos0=pos
+                rinv=pos0.norm_inv()
+                r2inv=rinv*rinv
+                a=-pos0*(3*M*h2)*(r2inv*r2inv*rinv)
+                rayDir[i]+=a*dt
+                rayDir[i]=rayDir[i].normalized()
+                pos=pos0+rayDir[i]*dt
+                q=checkHit(pos0,pos)
+                if passDiskPlane(pos0[1],pos[1]):
+                    passed+=1
+                if pos.norm_sqr()>diskOR2*8:
+                    rayKill[i]=1
+                if q==1:
+                    rayKill[i]=1
+                    b=texture[ti.cast((pos[0]+diskOR)*res,ti.int32),ti.cast((pos[2]+diskOR)*res,ti.int32)]
+                    k=b*diskOpacity
+                    pixels[pxX,pxZ]=ti.Vector([k*color[0],k*color[1],k*color[2],1])
+                    if passed==1:
+                        mainDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
+                        mainDiskRenderBase[pxX,pxZ]=color
+                    elif passed>1:
+                        lensDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
+                        lensDiskRenderBase[pxX,pxZ]=color
+                if skyBoxOn:
+                    j,hy,hz=skyBoxCheckHit(pos0,pos)
+                    if j==1:
+                        sb=skyBoxTexture[ti.cast((hz+skyBoxW/2)*skyBoxRes,ti.int32),ti.cast((hy+skyBoxW/2)*skyBoxRes,ti.int32)]
+                        pixels[pxX,pxZ]=ti.Vector([sb[0],sb[1],sb[2],1])
+                        rayKill[i]=1
+        if rayKill[i]==1:
+            horizonRender[pxX,pxZ]=ti.Vector([1,1,1,0])
+        else:
+            pixels[pxX,pxZ]=ti.Vector([0,0,0,1])
+
+@ti.kernel
+def reduceRes():
+    ti.loop_config(serialize=False)
+    for x in range(screenW):
+        hx=x*hiResScaling
+        ti.loop_config(serialize=False)
+        for y in range(screenH):
+            hy=y*hiResScaling
+            pixelsReduced[x,y]=pixels[hx,hy]
+
+
+window = ti.ui.Window("BH Render", (screenW, screenH))
+canvas = window.get_canvas()
+gui = window.get_gui()
+#textureCreate()
+while window.running:
+    a=0
+    with gui.sub_window("a", 0.,0, 0.15, 1):
+        if gui.button("Up"):
+            theta[None]+=0.1
+        if gui.button("Down"):
+            theta[None]-=0.1
+        if gui.button("Up tiny"):
+            theta[None]+=0.01
+        if gui.button("Down tiny"):
+            theta[None]-=0.01
+        if gui.button("In"):
+            camR[None]-=1
+        if gui.button("Out"):
+            camR[None]+=1
+        if gui.button("Export Render") and a==0:
+            a=1
+    pixels.fill(0)
+    mainDiskRenderBase.fill(0)
+    lensDiskRenderBase.fill(0)
+    mainDiskRenderMask.fill(0)
+    lensDiskRenderMask.fill(0)
+    horizonRender.fill(1)
+    rayInit()
+    rayLoop(a)
+    reduceRes()
+    if a==1:
+        ti.tools.imwrite(mainDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\MDRMask.png")
+        ti.tools.imwrite(lensDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\LDRMask.png")
+        ti.tools.imwrite(mainDiskRenderBase,f"C:\\Users\\{user}\\Downloads\\MDRBase.png")
+        ti.tools.imwrite(lensDiskRenderBase,f"C:\\Users\\{user}\\Downloads\\LDRBase.png")
+        ti.tools.imwrite(horizonRender,f"C:\\Users\\{user}\\Downloads\\EHT.png")
+        ti.tools.imwrite(pixels,f"C:\\Users\\{user}\\Downloads\\FullRender.png")
+    canvas.set_image(pixelsReduced)
+    window.show()
