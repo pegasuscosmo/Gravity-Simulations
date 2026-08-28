@@ -1,0 +1,30 @@
+I started making N Body sims after watching Deadlock's video [https://www.youtube.com/watch?v=nZHjD3cI-EU] on the Barnes Hut Algorithm. 
+I started with pure python making an object-based tree that used recursive division to be created. 
+It was incredibly slow and had many artifacts due to the high theta I had to use to get any reasonable performance. 
+Then, after discovering Taichi, I decided to take a more parallel approach. 
+A lot of the later work on the sim was created in my AP Computer Science Principles class for the AP performance task. 
+I started by making a binary radix tree as that’s friendly to both storage and speed. Binary radix trees can be constructed completely in parallel and always have exactly 2N-1 nodes which was very nice since Taichi dynamically sized fields are extremely slow. 
+At first when I realized I needed sorted Morton codes I tried making my very own radix sort, but upon failing multiple times I ended up using Taichi’s parallel_sort(). 
+From there it was relatively easy to compute forces. After creating the physics, I then created a density based visualizer. 
+I did this by adding a number to the pixel (and the surrounding pixels) a particle occupies then applying a function to get the brightness and color. 
+At the time I was quite happy with it running 100,000 particles at roughly 20fps. This was around the time I submitted it to the AP Performance Task. 
+I then took a break from N-body to work on RingSimV2 for my AP CSP Game Jam. Only recently, in late July, I returned unsatisfied by the performance. 
+The motivation for this was mostly due to Deadlock’s video where they made a simulation that ran with millions of particles.
+I ran some tests and added Taichi’s built in function profiler and found that the sort I was using to sort the Morton codes was taking hundreds of milliseconds to sort at higher N. 
+When I looked into it, I saw that the sort I was using used a modified even-odd sort with 190 serial stages per sort. This was extremely slow, so I returned to making a radix sort.
+When I ran some tests on it, it showed ~26ms sort time for N=1,000,000! I plugged it into the sim 9and after a couple hiccups), it ran like a charm. 
+I was now running 500,000 particles at a very acceptable framerate. But with how well my program scaled I thought that I could go higher. But upon trying N=1,000,000, it seemed gravity just turned off. 
+There were no errors, no NaNs I could see, and no problems I could find with my force or tree functions. So, I let it be for a while. 
+When I showed my family my new snazzy simulation, my sister asked how much I could do. When I told her something broke at 1,000,000, she suggested we find exactly what N it would break. 
+We did a bit of a manual binary search and found that at exactly N=809,551 the sim broke. Newly motivated to solve this, I did a lot of digging and I found a NaN in the root node’s mass, and upon looking at its children, found that one of them contained a NaN’d position that broke the tree creation. 
+After a lot of searching, I figured out what had happened. 
+Taichi’s random() function is deterministic, and since I used that for initializing positions, any given particle would be the exact same position every time you ran a sim with the same parameters. 
+Turns out at exactly N=809,551 the random() function gives a 0 for both x and y in the positions. A faulty While loop check allowed this to pass through and suddenly the particle was 0 units from the center. 
+When it tried to find the velocity, it divides by r and dividing by 0 gave a NaN. This then infected the tree and when a particle tried to see if a node was close enough, nothing ever returned True because the node Center Of Mass (COM) positions were always a NaN. 
+So, in effect, it turned gravity off. 
+Another bug then presented itself when I updated the initializer to give galaxies their own speeds. 
+Their cores were being nailed to a spot! When I looked into it further, I realized the mistake was that I did a position half step for the Verlet integration after the tree was built. 
+This allowed particles and even galaxy cores to gravitate towards their past selves, and with a dense enough region its past self’s gravity overpowered the gravity of anything else. 
+All it took was moving the first position half step to before tree creation and galaxies could move. 
+After all that work, I broke the 1,000,000 particle barrier. It runs ~15fps with N=2,000,000 and the frame time scales roughly O(nlogn) as expected [see https://www.desmos.com/calculator/xfcfxqrpbl]. 
+I’ve learned a lot from this program including how to make parallel functions and algorithms, work with the GPU, and even some behaviors of 2d gravity simulations, but I think, at least for now, I have finished this program.
