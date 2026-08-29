@@ -13,7 +13,7 @@ I then took a break from N-body to work on RingSimV2 for my AP CSP Game Jam. Onl
 The motivation for this was mostly due to Deadlock’s video where they made a simulation that ran with millions of particles.
 I ran some tests and added Taichi’s built in function profiler and found that the sort I was using to sort the Morton codes was taking hundreds of milliseconds to sort at higher N. 
 When I looked into it, I saw that the sort I was using used a modified even-odd sort with 190 serial stages per sort. This was extremely slow, so I returned to making a radix sort.
-When I ran some tests on it, it showed ~26ms sort time for N=1,000,000! I plugged it into the sim 9and after a couple hiccups), it ran like a charm. 
+When I ran some tests on it, it showed ~26ms sort time for N=1,000,000! I plugged it into the sim and after a couple hiccups), it ran like a charm. 
 I was now running 500,000 particles at a very acceptable framerate. But with how well my program scaled I thought that I could go higher. But upon trying N=1,000,000, it seemed gravity just turned off. 
 There were no errors, no NaNs I could see, and no problems I could find with my force or tree functions. So, I let it be for a while. 
 When I showed my family my new snazzy simulation, my sister asked how much I could do. When I told her something broke at 1,000,000, she suggested we find exactly what N it would break. 
