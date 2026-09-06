@@ -64,7 +64,7 @@ Black Hole Renderer
   - LDRMask: the texture values of LDRBase (used as a lumonisity mask of LDRBase)
   - MDRBase: white where a ray hits the accretion disk without ever passing the plane of the disk
   - MDRMask: the texture values of MDRBase (used as a luminosity mask of MDRBase)
-- Image saving requires user='' to be set to your desired downloads location (saves to Users\{user}\Downloads)
+- Uses procedural worley noise generation for accretion disk texture
 - Rendering requires a texture image saved as "eeee2.jpeg" (can be changed, line 13), must be a square black and white image of width diskOR*res (can be changed, lines 10 and 12)
 - Movement using GUI
-- Currently working on a procedural noise texture to replace the texture image import. This should also help with the resolution of the disk up close
+- Planned: RK integration, transparent disks
