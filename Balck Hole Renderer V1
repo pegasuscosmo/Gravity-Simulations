@@ -4,7 +4,7 @@ from PIL import Image
 import taichi as ti
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)
-user='Sathv'
+user=''
 #BH
 M=1
 diskOR=16
