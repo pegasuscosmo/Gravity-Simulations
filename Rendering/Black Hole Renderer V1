@@ -4,7 +4,7 @@ from PIL import Image
 import taichi as ti
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)
-user=''
+user='Sathv'
 #BH
 M=1
 diskOR=12
@@ -19,8 +19,8 @@ camR[None]=30
 theta[None]=0.005
 camFocusDist=0.5
 #rays
-dtau=0.02
-maxSteps=10000
+dtau=1
+maxSteps=1000
 #   hi res
 dtR=1
 sR=1
@@ -231,7 +231,7 @@ canvas = window.get_canvas()
 gui = window.get_gui()
 while window.running:
     a=0
-    with gui.sub_window("a", 0.,0, 0.15, 1):
+    with gui.sub_window("Render", 0.,0, 0.07, 0.06):
         if gui.button("Export Render") and a==0:
             a=1
     window.get_events()
@@ -239,9 +239,9 @@ while window.running:
         camR[None]-=0.1
     if window.is_pressed('s'):
         camR[None]+=0.1
-    if window.is_pressed('a'):
-        theta[None]+=0.01
     if window.is_pressed('d'):
+        theta[None]+=0.01
+    if window.is_pressed('a'):
         theta[None]-=0.01
     pixels.fill(0)
     mainDiskRenderBase.fill(0)
