@@ -4,38 +4,37 @@ from PIL import Image
 import taichi as ti
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)
-user=''
+user='Sathv'
 #BH
 M=1
 diskOR=16
 diskIR=7
-res=50
 img=Image.open(f"C:\\Users\\{user}\\Downloads\\eeee2.jpeg")
 color=ti.Vector([1,0.5,1,1])
 diskOpacity=1.0
 #cam
-screenW,screenH=1024,512
+screenW,screenH=1800,900
 camR=ti.field(dtype=ti.f32,shape=())
 theta=ti.field(dtype=ti.f32,shape=()) #radians
 camR[None]=30
 theta[None]=0.005
 camFocusDist=0.5
 #rays
-dtau=0.1
-maxSteps=10000
+dtau=0.0251
+maxSteps=40000
 #   hi res
 dtR=1
 sR=1
 hiResScaling=1
 HDscreenW=screenW*hiResScaling
 HDscreenH=screenH*hiResScaling
-
-#skybox
-skyImg=Image.open(f"C:\\Users\\{user}\\Downloads\\ffff2.jpeg")
-skyBoxX=-17
-skyBoxW=80
-skyBoxRes=20
-skyBoxOn=False
+#noise parameters
+noiseOctaves=8
+f0=1/8
+am=2
+p=3
+nh=3
+twirl=15
 
 pixels=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
 pixelsReduced=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
@@ -54,23 +53,6 @@ lensDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
 mainDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
 lensDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
 horizonRender=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
-
-img_array = np.array(img)[:,:,0].astype(np.float32)/255.0
-texture=ti.field(dtype=ti.f32,shape=img_array.shape)
-texture.from_numpy(img_array)
-
-img_array2 = np.array(skyImg).astype(np.float32)/255.0
-skyBoxTexture=ti.Vector.field(4,dtype=ti.f32,shape=img_array2.shape[:2])
-skyBoxTexture.from_numpy(img_array2)
-
-@ti.kernel
-def textureCreate():
-    for x in range(2*diskOR*res):
-        for y in range(2*diskOR*res):
-            xu=x-diskOR*res
-            yu=y-diskOR*res
-            ru=ti.Vector([xu,yu]).norm()
-            texture[x,y]=1-ru/diskOR2+ti.random()/5
 
 @ti.func
 def passDiskPlane(y0,y1):
@@ -97,25 +79,6 @@ def checkHit(pos0,pos1):
             q=1
     return q
 
-@ti.func
-def skyBoxCheckHit(pos0,pos1):
-    x0=pos0[0]
-    y0=pos0[1]
-    z0=pos0[2]
-    x1=pos1[0]
-    y1=pos1[1]
-    z1=pos1[2]
-    q=-1
-    x0s=x0-skyBoxX
-    x1s=x1-skyBoxX
-    y=0
-    z=0
-    if x0s*x1s<0:
-        W=x0s/(x0s-x1s)
-        y=y0+W*(y1-y0)
-        z=z0+W*(z1-z0)
-        q=1
-    return q,y,z
 
 @ti.kernel
 def rayInit():
@@ -143,6 +106,29 @@ def rayInit():
         rayDir[i]=(forward+ right*u + up*v).normalized()
         rayKill[i]=0
 
+
+f0inv=int(1/f0)
+mgs=f0inv*(1<<(noiseOctaves-1))
+pointPos=ti.Vector.field(2,dtype=ti.f32,shape=(noiseOctaves,mgs,mgs))
+
+@ti.kernel
+def initPoints(o: ti.int32):
+    gridSize=f0inv*1<<o
+    for x,y in ti.ndrange(gridSize, gridSize):
+        x0=ti.random()
+        y0=ti.random()
+        pointPos[o,x,y]=ti.Vector([x0+x,y0+y])
+
+def initPointsController():
+    for o in range(noiseOctaves):
+        initPoints(o)
+
+initPointsController()
+
+@ti.func
+def rotationFunc(r: ti.f32) -> ti.f32:
+    x=twirl/(r+0.1)
+    return x
 
 @ti.kernel
 def rayLoop(hiRes: ti.int32):
@@ -177,8 +163,37 @@ def rayLoop(hiRes: ti.int32):
                     rayKill[i]=1
                 if q==1:
                     rayKill[i]=1
-                    b=texture[ti.cast((pos[0]+diskOR)*res,ti.int32),ti.cast((pos[2]+diskOR)*res,ti.int32)]
-                    k=b*diskOpacity
+                    v=0.0
+                    maxV=0.0
+                    amp=1.0
+                    p2d=ti.Vector([pos[0],pos[2]])
+                    r2d=p2d.norm()
+                    dTheta=rotationFunc(r2d)
+                    theta=ti.atan2(p2d[1],p2d[0])
+                    posRotate=ti.Vector([ti.cos(theta+dTheta),ti.sin(theta+dTheta)])*r2d
+                    posNorm=ti.Vector([posRotate[0]+diskOR,posRotate[1]+diskOR])/(diskOR*2)
+                    for o in range(noiseOctaves):
+                        gridSize=f0inv*1<<o
+                        gridIdx=ti.Vector([ti.int32(0),ti.int32(0)])
+                        gridPos=posNorm*gridSize
+                        gridIdx=ti.cast(ti.floor(gridPos),ti.int32)
+                        lowestR=(pointPos[o,gridIdx[0],gridIdx[1]]-gridPos).norm()
+                        k=0
+                        l=0
+                        for k0 in range(3):
+                            k=k0-1
+                            for l0 in range(3):
+                                l=l0-1
+                                gx=gridIdx[0]+k
+                                gy=gridIdx[1]+l 
+                                gx=ti.max(ti.min(gridSize,gx),0)
+                                gy=ti.max(ti.min(gridSize,gy),0)
+                                r=pointPos[o,gx,gy]-gridPos
+                                lowestR=ti.min(r.norm(),lowestR)
+                        v+=amp*lowestR
+                        amp/=am
+                        maxV+=amp
+                    k=(maxV-v)*nh*diskOpacity
                     pixels[pxX,pxZ]=ti.Vector([k*color[0],k*color[1],k*color[2],1])
                     if passed==1:
                         mainDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
@@ -186,12 +201,6 @@ def rayLoop(hiRes: ti.int32):
                     elif passed>1:
                         lensDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
                         lensDiskRenderBase[pxX,pxZ]=color
-                if skyBoxOn:
-                    j,hy,hz=skyBoxCheckHit(pos0,pos)
-                    if j==1:
-                        sb=skyBoxTexture[ti.cast((hz+skyBoxW/2)*skyBoxRes,ti.int32),ti.cast((hy+skyBoxW/2)*skyBoxRes,ti.int32)]
-                        pixels[pxX,pxZ]=ti.Vector([sb[0],sb[1],sb[2],1])
-                        rayKill[i]=1
         if rayKill[i]==1:
             horizonRender[pxX,pxZ]=ti.Vector([1,1,1,0])
         else:
@@ -211,7 +220,6 @@ def reduceRes():
 window = ti.ui.Window("BH Render", (screenW, screenH))
 canvas = window.get_canvas()
 gui = window.get_gui()
-#textureCreate()
 while window.running:
     a=0
     with gui.sub_window("a", 0.,0, 0.15, 1):
