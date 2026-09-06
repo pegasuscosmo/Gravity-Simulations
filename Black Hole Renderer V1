@@ -7,10 +7,9 @@ ti.init(arch=ti.gpu,default_fp=ti.f32)
 user=''
 #BH
 M=1
-diskOR=16
+diskOR=12
 diskIR=7
-img=Image.open(f"C:\\Users\\{user}\\Downloads\\eeee2.jpeg")
-color=ti.Vector([1,0.5,1,1])
+color=ti.Vector([1,0.7,0.5,1])
 diskOpacity=1.0
 #cam
 screenW,screenH=1800,900
@@ -20,8 +19,8 @@ camR[None]=30
 theta[None]=0.005
 camFocusDist=0.5
 #rays
-dtau=0.0251
-maxSteps=40000
+dtau=0.02
+maxSteps=10000
 #   hi res
 dtR=1
 sR=1
@@ -30,11 +29,11 @@ HDscreenW=screenW*hiResScaling
 HDscreenH=screenH*hiResScaling
 #noise parameters
 noiseOctaves=8
-f0=1/8
+f0=1/16
 am=2
 p=3
 nh=3
-twirl=15
+twirl=0.5
 
 pixels=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
 pixelsReduced=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
@@ -69,6 +68,8 @@ def checkHit(pos0,pos1):
     y1=pos1[1]
     z1=pos1[2]
     q=-1
+    x=0.0
+    z=0.0
     if passDiskPlane(y0,y1): #passes plane
         W=y0/(y0-y1)
         x=x0+W*(x1-x0)
@@ -77,7 +78,7 @@ def checkHit(pos0,pos1):
         q=0
         if r>diskIR2 and r<diskOR2: #hit
             q=1
-    return q
+    return ti.Vector([q,x,z])
 
 
 @ti.kernel
@@ -125,10 +126,15 @@ def initPointsController():
 
 initPointsController()
 
+
+
 @ti.func
 def rotationFunc(r: ti.f32) -> ti.f32:
-    x=twirl/(r+0.1)
-    return x
+    a=diskOR-2 #outer (->0)
+    b=diskIR-1 #inner (->inf)
+    c=100
+    x=(a-r)/(r-b) - ti.pow((r-ti.sqrt(b)),2)/c
+    return twirl*x
 
 @ti.kernel
 def rayLoop(hiRes: ti.int32):
@@ -156,7 +162,10 @@ def rayLoop(hiRes: ti.int32):
                 rayDir[i]+=a*dt
                 rayDir[i]=rayDir[i].normalized()
                 pos=pos0+rayDir[i]*dt
-                q=checkHit(pos0,pos)
+                w=checkHit(pos0,pos)
+                q=w[0]
+                xi=w[1]
+                zi=w[2]
                 if passDiskPlane(pos0[1],pos[1]):
                     passed+=1
                 if pos.norm_sqr()>diskOR2*8:
@@ -166,7 +175,7 @@ def rayLoop(hiRes: ti.int32):
                     v=0.0
                     maxV=0.0
                     amp=1.0
-                    p2d=ti.Vector([pos[0],pos[2]])
+                    p2d=ti.Vector([xi,zi])
                     r2d=p2d.norm()
                     dTheta=rotationFunc(r2d)
                     theta=ti.atan2(p2d[1],p2d[0])
@@ -223,20 +232,17 @@ gui = window.get_gui()
 while window.running:
     a=0
     with gui.sub_window("a", 0.,0, 0.15, 1):
-        if gui.button("Up"):
-            theta[None]+=0.1
-        if gui.button("Down"):
-            theta[None]-=0.1
-        if gui.button("Up tiny"):
-            theta[None]+=0.01
-        if gui.button("Down tiny"):
-            theta[None]-=0.01
-        if gui.button("In"):
-            camR[None]-=1
-        if gui.button("Out"):
-            camR[None]+=1
         if gui.button("Export Render") and a==0:
             a=1
+    window.get_events()
+    if window.is_pressed('w'):
+        camR[None]-=0.1
+    if window.is_pressed('s'):
+        camR[None]+=0.1
+    if window.is_pressed('a'):
+        theta[None]+=0.01
+    if window.is_pressed('d'):
+        theta[None]-=0.01
     pixels.fill(0)
     mainDiskRenderBase.fill(0)
     lensDiskRenderBase.fill(0)
