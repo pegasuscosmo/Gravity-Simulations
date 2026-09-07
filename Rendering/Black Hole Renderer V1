@@ -4,13 +4,12 @@ from PIL import Image
 import taichi as ti
 ti.reset()
 ti.init(arch=ti.gpu,default_fp=ti.f32)
-user='Sathv'
+user=''
 #BH
 M=1
-diskOR=12
-diskIR=7
+diskOR=16
+diskIR=9
 color=ti.Vector([1,0.7,0.5,1])
-diskOpacity=1.0
 #cam
 screenW,screenH=1800,900
 camR=ti.field(dtype=ti.f32,shape=())
@@ -19,25 +18,20 @@ camR[None]=30
 theta[None]=0.005
 camFocusDist=0.5
 #rays
-dtau=1
-maxSteps=1000
-#   hi res
-dtR=1
-sR=1
-hiResScaling=1
-HDscreenW=screenW*hiResScaling
-HDscreenH=screenH*hiResScaling
+dtau=.1
+maxSteps=200
 #noise parameters
 noiseOctaves=8
-f0=1/16
+f0=1/3
 am=2
-p=3
-nh=3
-twirl=0.5
+nh=5
+twirl=7
+ra=17 #outer
+rb=12 #inner
 
-pixels=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+pixels=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
 pixelsReduced=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
-rayCount=HDscreenW*HDscreenH
+rayCount=screenW*screenH
 rayPos=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
 rayDir=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
 rayKill=ti.field(dtype=ti.u8,shape=rayCount)
@@ -47,11 +41,13 @@ diskOR2=diskOR*diskOR
 diskIR2=diskIR*diskIR
 
 #render exporting
-mainDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
-lensDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
-mainDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
-lensDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
-horizonRender=ti.Vector.field(4,dtype=ti.f32,shape=(HDscreenW,HDscreenH))
+mainDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+lensDiskRenderMask=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+mainDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+lensDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+horizonRender=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
+
+t=ti.field(dtype=ti.f32,shape=())
 
 @ti.func
 def passDiskPlane(y0,y1):
@@ -92,14 +88,14 @@ def rayInit():
     right=forward.cross(worldUp).normalized()
     up=right.cross(forward).normalized()
 
-    aspect=ti.cast(HDscreenW, ti.f32) / ti.cast(HDscreenH, ti.f32)
+    aspect=ti.cast(screenW, ti.f32) / ti.cast(screenH, ti.f32)
     scale=0.7
 
     for i in range(rayCount):
-        px=i%HDscreenW
-        py=i//HDscreenW
-        u=(ti.cast(px, ti.f32)+0.5)/ti.cast(HDscreenW, ti.f32)*2-1
-        v=(ti.cast(py, ti.f32)+0.5)/ti.cast(HDscreenH, ti.f32)*2 -1
+        px=i%screenW
+        py=i//screenW
+        u=(ti.cast(px, ti.f32)+0.5)/ti.cast(screenW, ti.f32)*2-1
+        v=(ti.cast(py, ti.f32)+0.5)/ti.cast(screenH, ti.f32)*2 -1
         u*=aspect*scale
         v*=scale
         rayToPixel[i] = ti.Vector([px, py])
@@ -126,105 +122,108 @@ def initPointsController():
 
 initPointsController()
 
-
+@ti.func
+def sinh(x: ti.f32) -> ti.f32:
+    y=ti.exp(x)-ti.exp(-x)
+    y/=2
+    return y
 
 @ti.func
 def rotationFunc(r: ti.f32) -> ti.f32:
-    a=diskOR-2 #outer (->0)
-    b=diskIR-1 #inner (->inf)
-    c=100
-    x=(a-r)/(r-b) - ti.pow((r-ti.sqrt(b)),2)/c
+    c=(ra+rb)/2
+    #x=(a-r)/(r-b) - ti.pow((r-ti.sqrt(b)),2)/c
+    x=sinh(r/c-1)
     return twirl*x
 
+@ti.func
+def brightnessFunc(r: ti.f32) -> ti.f32:
+    x=16*ti.pow(r-diskIR,2)*ti.pow(r-diskOR,2)/ti.pow(diskOR-diskIR,4)
+    return x
+
+@ti.func
+def doppler(t: ti.f32):
+    c=ti.cos(theta[None])
+    d=(1+c*ti.cos(t))/2
+    return d
+
+height=0.5
 @ti.kernel
-def rayLoop(hiRes: ti.int32):
+def rayLoop():
     for i in range(rayCount):
         h=rayPos[i].cross(rayDir[i])
         h2=h.dot(h)
         pos=rayPos[i]
         passed=0
         q=0
-        j=0
         px=rayToPixel[i]
         pxX=px[0]
         pxZ=px[1]
         S=maxSteps
         dt=dtau
-        if hiRes==1:
-            S=maxSteps*sR
-            dt=dtau/dtR
+        opacity=1.0
         for s in range(S):
-            if rayKill[i]==0:
-                pos0=pos
-                rinv=pos0.norm_inv()
-                r2inv=rinv*rinv
-                a=-pos0*(3*M*h2)*(r2inv*r2inv*rinv)
-                rayDir[i]+=a*dt
-                rayDir[i]=rayDir[i].normalized()
-                pos=pos0+rayDir[i]*dt
-                w=checkHit(pos0,pos)
-                q=w[0]
-                xi=w[1]
-                zi=w[2]
-                if passDiskPlane(pos0[1],pos[1]):
-                    passed+=1
-                if pos.norm_sqr()>diskOR2*8:
-                    rayKill[i]=1
-                if q==1:
-                    rayKill[i]=1
-                    v=0.0
-                    maxV=0.0
-                    amp=1.0
-                    p2d=ti.Vector([xi,zi])
-                    r2d=p2d.norm()
-                    dTheta=rotationFunc(r2d)
-                    theta=ti.atan2(p2d[1],p2d[0])
-                    posRotate=ti.Vector([ti.cos(theta+dTheta),ti.sin(theta+dTheta)])*r2d
-                    posNorm=ti.Vector([posRotate[0]+diskOR,posRotate[1]+diskOR])/(diskOR*2)
-                    for o in range(noiseOctaves):
-                        gridSize=f0inv*1<<o
-                        gridIdx=ti.Vector([ti.int32(0),ti.int32(0)])
-                        gridPos=posNorm*gridSize
-                        gridIdx=ti.cast(ti.floor(gridPos),ti.int32)
-                        lowestR=(pointPos[o,gridIdx[0],gridIdx[1]]-gridPos).norm()
-                        k=0
-                        l=0
-                        for k0 in range(3):
-                            k=k0-1
-                            for l0 in range(3):
-                                l=l0-1
-                                gx=gridIdx[0]+k
-                                gy=gridIdx[1]+l 
-                                gx=ti.max(ti.min(gridSize,gx),0)
-                                gy=ti.max(ti.min(gridSize,gy),0)
-                                r=pointPos[o,gx,gy]-gridPos
-                                lowestR=ti.min(r.norm(),lowestR)
-                        v+=amp*lowestR
-                        amp/=am
-                        maxV+=amp
-                    k=(maxV-v)*nh*diskOpacity
-                    pixels[pxX,pxZ]=ti.Vector([k*color[0],k*color[1],k*color[2],1])
-                    if passed==1:
-                        mainDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
-                        mainDiskRenderBase[pxX,pxZ]=color
-                    elif passed>1:
-                        lensDiskRenderMask[pxX,pxZ]=ti.Vector([k,k,k,1])
-                        lensDiskRenderBase[pxX,pxZ]=color
+            pos0=pos
+            rinv=pos0.norm_inv()
+            dt=dtau/(rinv)
+            r2inv=rinv*rinv
+            a=-pos0*(3*M*h2)*(r2inv*r2inv*rinv)
+            rayDir[i]+=a*dt
+            rayDir[i]=rayDir[i].normalized()
+            pos=pos0+rayDir[i]*dt
+            w=checkHit(pos0,pos)
+            q=w[0]
+            xi=w[1]
+            zi=w[2]
+            if passDiskPlane(pos0[1],pos[1]):
+                passed+=1
+            if pos.norm_sqr()>diskOR2*8:
+                rayKill[i]=1
+            if q==1:
+                rayKill[i]=1
+                v=0.0
+                maxV=0.0
+                amp=1.0
+                p2d=ti.Vector([xi,zi])
+                r2d=p2d.norm()
+                dTheta=rotationFunc(r2d)-t[None]
+                theta=ti.atan2(p2d[1],p2d[0])
+                posRotate=ti.Vector([ti.cos(theta+dTheta),ti.sin(theta+dTheta)])*r2d
+                posNorm=ti.Vector([posRotate[0]+diskOR,posRotate[1]+diskOR])/(diskOR*2)
+                for o in range(noiseOctaves):
+                    gridSize=f0inv*1<<o
+                    gridIdx=ti.Vector([ti.int32(0),ti.int32(0)])
+                    gridPos=posNorm*gridSize
+                    gridIdx=ti.cast(ti.floor(gridPos),ti.int32)
+                    lowestR=(pointPos[o,gridIdx[0],gridIdx[1]]-gridPos).norm()
+                    k=0
+                    l=0
+                    for k0 in range(3):
+                        k=k0-1
+                        for l0 in range(3):
+                            l=l0-1
+                            gx=gridIdx[0]+k
+                            gy=gridIdx[1]+l 
+                            gx=ti.max(ti.min(gridSize,gx),0)
+                            gy=ti.max(ti.min(gridSize,gy),0)
+                            r=pointPos[o,gx,gy]-gridPos
+                            lowestR=ti.min(r.norm(),lowestR)
+                    v+=amp*lowestR
+                    amp/=am
+                    maxV+=amp
+                b=brightnessFunc(ti.sqrt(xi*xi+zi*zi))
+                k=ti.max(0,maxV-v)*nh*b * doppler(ti.atan2(xi,-zi))
+                pixels[pxX,pxZ]+=ti.Vector([k*color[0],k*color[1],k*color[2],1])*ti.max(0,opacity)
+                opacity-=k*opacity
+                if passed==1:
+                    mainDiskRenderMask[pxX,pxZ]=ti.Vector([1,1,1,k])
+                    mainDiskRenderBase[pxX,pxZ]=color
+                elif passed>1:
+                    lensDiskRenderMask[pxX,pxZ]=ti.Vector([1,1,1,k])
+                    lensDiskRenderBase[pxX,pxZ]=color
         if rayKill[i]==1:
             horizonRender[pxX,pxZ]=ti.Vector([1,1,1,0])
         else:
             pixels[pxX,pxZ]=ti.Vector([0,0,0,1])
-
-@ti.kernel
-def reduceRes():
-    ti.loop_config(serialize=False)
-    for x in range(screenW):
-        hx=x*hiResScaling
-        ti.loop_config(serialize=False)
-        for y in range(screenH):
-            hy=y*hiResScaling
-            pixelsReduced[x,y]=pixels[hx,hy]
-
 
 window = ti.ui.Window("BH Render", (screenW, screenH))
 canvas = window.get_canvas()
@@ -236,13 +235,17 @@ while window.running:
             a=1
     window.get_events()
     if window.is_pressed('w'):
-        camR[None]-=0.1
+        camR[None]/=1.01
     if window.is_pressed('s'):
-        camR[None]+=0.1
+        camR[None]*=1.01
     if window.is_pressed('d'):
-        theta[None]+=0.01
+        theta[None]+=0.005
     if window.is_pressed('a'):
-        theta[None]-=0.01
+        theta[None]-=0.005
+    if window.is_pressed('e'):
+        t[None]-=0.005
+    if window.is_pressed('q'):
+        t[None]+=0.005
     pixels.fill(0)
     mainDiskRenderBase.fill(0)
     lensDiskRenderBase.fill(0)
@@ -250,8 +253,7 @@ while window.running:
     lensDiskRenderMask.fill(0)
     horizonRender.fill(1)
     rayInit()
-    rayLoop(a)
-    reduceRes()
+    rayLoop()
     if a==1:
         ti.tools.imwrite(mainDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\MDRMask.png")
         ti.tools.imwrite(lensDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\LDRMask.png")
@@ -259,5 +261,5 @@ while window.running:
         ti.tools.imwrite(lensDiskRenderBase,f"C:\\Users\\{user}\\Downloads\\LDRBase.png")
         ti.tools.imwrite(horizonRender,f"C:\\Users\\{user}\\Downloads\\EHT.png")
         ti.tools.imwrite(pixels,f"C:\\Users\\{user}\\Downloads\\FullRender.png")
-    canvas.set_image(pixelsReduced)
+    canvas.set_image(pixels)
     window.show()
