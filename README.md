@@ -68,3 +68,11 @@ Black Hole Renderer
 - Rendering requires a texture image saved as "eeee2.jpeg" (can be changed, line 13), must be a square black and white image of width diskOR*res (can be changed, lines 10 and 12)
 - Movement using GUI
 - Planned: RK integration, transparent disks
+
+Black Hole Merger
+- Julia lang + CUDA.jl
+- Hydrodynamics accretion disk simulation around inspiralling binary black holes
+- PN2.5 Expansion for black hole accelerations
+- Paczynski-Wiita for particle accelerations
+- Smoother Particle Hydrodynamics for gas simulation
+- Adaptive Smoothing Length WIP
