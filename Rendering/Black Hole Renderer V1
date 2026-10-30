@@ -7,27 +7,31 @@ ti.init(arch=ti.gpu,default_fp=ti.f32)
 user=''
 #BH
 M=1
-diskOR=16
-diskIR=9
+diskOR=30
+diskIR=7
+height=2
 color=ti.Vector([1,0.7,0.5,1])
+dopplerStr=0.7
+doplerR=15
 #cam
 screenW,screenH=1800,900
 camR=ti.field(dtype=ti.f32,shape=())
 theta=ti.field(dtype=ti.f32,shape=()) #radians
 camR[None]=30
-theta[None]=0.005
+theta[None]=1
 camFocusDist=0.5
+
 #rays
-dtau=.1
-maxSteps=200
+dtau=.02
+maxSteps=1000
+noiseP=1
+noiseAmp=2.0
 #noise parameters
 noiseOctaves=8
-f0=1/3
-am=2
-nh=5
-twirl=7
-ra=17 #outer
-rb=12 #inner
+f0=1/5
+am=1.5
+nh=0.1
+twirl=2
 
 pixels=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
 pixelsReduced=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
@@ -36,6 +40,7 @@ rayPos=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
 rayDir=ti.Vector.field(3,dtype=ti.f32,shape=rayCount)
 rayKill=ti.field(dtype=ti.u8,shape=rayCount)
 rayToPixel=ti.Vector.field(2,dtype=ti.int32,shape=rayCount)
+rayNoise=ti.field(dtype=ti.f32,shape=rayCount)
 
 diskOR2=diskOR*diskOR
 diskIR2=diskIR*diskIR
@@ -48,6 +53,44 @@ lensDiskRenderBase=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
 horizonRender=ti.Vector.field(4,dtype=ti.f32,shape=(screenW,screenH))
 
 t=ti.field(dtype=ti.f32,shape=())
+
+tW=diskOR*2*256
+
+texture=ti.field(ti.f32,shape=(tW,tW))
+@ti.kernel
+def createTexture():
+    for x,y in ti.ndrange(tW,tW):
+        posNorm=ti.Vector([x,y])/tW
+        v=0.0
+        maxV=0.0
+        amp=1.0
+        for o in range(noiseOctaves):
+            gridSize=f0inv*1<<o
+            gridIdx=ti.Vector([ti.int32(0),ti.int32(0)])
+            gridPos=posNorm*gridSize
+            gridIdx=ti.cast(ti.floor(gridPos),ti.int32)
+            lowestR=(pointPos[o,gridIdx[0],gridIdx[1]]-gridPos).norm()
+            k=0
+            l=0
+            for k0 in range(3):
+                k=k0-1
+                for l0 in range(3):
+                    l=l0-1
+                    gx=gridIdx[0]+k
+                    gy=gridIdx[1]+l 
+                    gx=ti.max(ti.min(gridSize,gx),0)
+                    gy=ti.max(ti.min(gridSize,gy),0)
+                    r=pointPos[o,gx,gy]-gridPos
+                    lowestR=ti.min(r.norm(),lowestR)
+            v+=amp*lowestR
+            amp/=am
+            maxV+=amp
+        texture[x,y]=ti.max(0,maxV-v)
+    for x,y in ti.ndrange(screenW,screenH):
+        z=0.0
+        for i in range(noiseP):
+            z+=(ti.random()+1)/2
+        rayNoise[x+y*screenW]=noiseAmp*z/noiseP
 
 @ti.func
 def passDiskPlane(y0,y1):
@@ -86,6 +129,8 @@ def rayInit():
 
     worldUp=ti.Vector([0.0,1.0,0.0])
     right=forward.cross(worldUp).normalized()
+    if ti.cos(theta[None])<0:
+        right=-right
     up=right.cross(forward).normalized()
 
     aspect=ti.cast(screenW, ti.f32) / ti.cast(screenH, ti.f32)
@@ -130,7 +175,7 @@ def sinh(x: ti.f32) -> ti.f32:
 
 @ti.func
 def rotationFunc(r: ti.f32) -> ti.f32:
-    c=(ra+rb)/2
+    c=(diskOR+diskIR)/2
     #x=(a-r)/(r-b) - ti.pow((r-ti.sqrt(b)),2)/c
     x=sinh(r/c-1)
     return twirl*x
@@ -141,12 +186,24 @@ def brightnessFunc(r: ti.f32) -> ti.f32:
     return x
 
 @ti.func
-def doppler(t: ti.f32):
-    c=ti.cos(theta[None])
-    d=(1+c*ti.cos(t))/2
-    return d
+def getDopplerFreq(pos: ti.types.vector(3,dtype=ti.f32), rayDir: ti.types.vector(3,dtype=ti.f32)) -> ti.f32:
+    x=pos[0]
+    y=pos[1]
+    z=pos[2]
+    r=ti.sqrt(x*x + z*z + y*y)
+    beta= ti.sqrt(M/r)
+    beta= ti.min(beta, 0.999)
+    vx=-z/r *beta
+    vz=x/r *beta
+    dx=-rayDir[0]
+    dy=-rayDir[1]
+    dz=-rayDir[2]
+    l=ti.sqrt(dx*dx + dy*dy + dz*dz)
+    betaD=(vx*dx + vz*dz) /l
+    D=ti.sqrt(1.0-beta*beta) /(1.0-betaD)
 
-height=0.5
+    return D
+
 @ti.kernel
 def rayLoop():
     for i in range(rayCount):
@@ -159,8 +216,10 @@ def rayLoop():
         pxX=px[0]
         pxZ=px[1]
         S=maxSteps
-        dt=dtau
+        rinv=pos.norm_inv()
+        dt=dtau/(rinv)
         opacity=1.0
+        pos+=rayDir[i]*rayNoise[i]*(pos.norm()/diskOR)*dt
         for s in range(S):
             pos0=pos
             rinv=pos0.norm_inv()
@@ -172,48 +231,43 @@ def rayLoop():
             pos=pos0+rayDir[i]*dt
             w=checkHit(pos0,pos)
             q=w[0]
-            xi=w[1]
-            zi=w[2]
+            xi=pos[0]
+            zi=pos[2]
             if passDiskPlane(pos0[1],pos[1]):
                 passed+=1
             if pos.norm_sqr()>diskOR2*8:
                 rayKill[i]=1
-            if q==1:
+            rho=pos[0]*pos[0]+pos[2]*pos[2]
+            if ti.abs(pos[1])<height and rho>diskIR2 and rho<diskOR2:
                 rayKill[i]=1
-                v=0.0
-                maxV=0.0
-                amp=1.0
                 p2d=ti.Vector([xi,zi])
                 r2d=p2d.norm()
                 dTheta=rotationFunc(r2d)-t[None]
                 theta=ti.atan2(p2d[1],p2d[0])
                 posRotate=ti.Vector([ti.cos(theta+dTheta),ti.sin(theta+dTheta)])*r2d
-                posNorm=ti.Vector([posRotate[0]+diskOR,posRotate[1]+diskOR])/(diskOR*2)
-                for o in range(noiseOctaves):
-                    gridSize=f0inv*1<<o
-                    gridIdx=ti.Vector([ti.int32(0),ti.int32(0)])
-                    gridPos=posNorm*gridSize
-                    gridIdx=ti.cast(ti.floor(gridPos),ti.int32)
-                    lowestR=(pointPos[o,gridIdx[0],gridIdx[1]]-gridPos).norm()
-                    k=0
-                    l=0
-                    for k0 in range(3):
-                        k=k0-1
-                        for l0 in range(3):
-                            l=l0-1
-                            gx=gridIdx[0]+k
-                            gy=gridIdx[1]+l 
-                            gx=ti.max(ti.min(gridSize,gx),0)
-                            gy=ti.max(ti.min(gridSize,gy),0)
-                            r=pointPos[o,gx,gy]-gridPos
-                            lowestR=ti.min(r.norm(),lowestR)
-                    v+=amp*lowestR
-                    amp/=am
-                    maxV+=amp
+                samplePos=ti.Vector([ti.cast((posRotate[0]+diskOR)/(2*diskOR) *tW,ti.int32),ti.cast((posRotate[1]+diskOR)/(2*diskOR) *tW,ti.int32)])
+                v=texture[samplePos[0],samplePos[1]]
                 b=brightnessFunc(ti.sqrt(xi*xi+zi*zi))
-                k=ti.max(0,maxV-v)*nh*b * doppler(ti.atan2(xi,-zi))
-                pixels[pxX,pxZ]+=ti.Vector([k*color[0],k*color[1],k*color[2],1])*ti.max(0,opacity)
-                opacity-=k*opacity
+                F=getDopplerFreq(pos, rayDir[i])
+                k=ti.max(0,v)*nh*b * F*F*F * (height-ti.abs(pos[1]))
+
+                red=ti.Vector([0.8, 0.1, 0.0])
+                gray=ti.Vector([0.7, 0.6, 0.5])
+                blue=ti.Vector([0.2, 0.5, 1.0])
+                c=gray
+
+                if F < 1.0:
+                    u=(F-0.67) /(1.0-0.67)
+                    u=ti.max(0.0,ti.min(1.0,u))
+                    c=red*(1.0-u) + gray*u
+
+                else:
+                    u=(F-1.0) /(1.5-1.0)
+                    u=ti.max(0.0,ti.min(1.0,u))
+                    c=gray*(1.0-u) + blue*u
+
+                pixels[pxX,pxZ]+=ti.Vector([k*c[0],k*c[1],k*c[2],1])*ti.max(0,opacity)
+                opacity-=k*opacity*dt
                 if passed==1:
                     mainDiskRenderMask[pxX,pxZ]=ti.Vector([1,1,1,k])
                     mainDiskRenderBase[pxX,pxZ]=color
@@ -225,14 +279,27 @@ def rayLoop():
         else:
             pixels[pxX,pxZ]=ti.Vector([0,0,0,1])
 
+dyC=ti.field(dtype=ti.f32,shape=())
+dyC[None]=1.0
+@ti.kernel
+def dynamic():
+    for i in range(rayCount):
+        px=i%screenW
+        py=i//screenW
+        pixels[px,py]*=dyC[None]
+
+
+
 window = ti.ui.Window("BH Render", (screenW, screenH))
 canvas = window.get_canvas()
 gui = window.get_gui()
+createTexture()
 while window.running:
     a=0
     with gui.sub_window("Render", 0.,0, 0.07, 0.06):
         if gui.button("Export Render") and a==0:
             a=1
+        gui.text(f"{dyC[None]}")
     window.get_events()
     if window.is_pressed('w'):
         camR[None]/=1.01
@@ -246,6 +313,10 @@ while window.running:
         t[None]-=0.005
     if window.is_pressed('q'):
         t[None]+=0.005
+    if window.is_pressed('l'):
+        dyC[None]-=0.05
+    if window.is_pressed('o'):
+        dyC[None]+=0.05
     pixels.fill(0)
     mainDiskRenderBase.fill(0)
     lensDiskRenderBase.fill(0)
@@ -254,6 +325,8 @@ while window.running:
     horizonRender.fill(1)
     rayInit()
     rayLoop()
+    dyC[None]=max(dyC[None],0)
+    dynamic()
     if a==1:
         ti.tools.imwrite(mainDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\MDRMask.png")
         ti.tools.imwrite(lensDiskRenderMask,f"C:\\Users\\{user}\\Downloads\\LDRMask.png")
