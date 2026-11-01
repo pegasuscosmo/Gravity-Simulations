@@ -1,0 +1,38 @@
+I've always loved black holes and relativity, so when I felt it was time to make a new project I thought "what about black holes?"
+Binary black hole systems are weird. When objects with masses accelerate, they cause gravitational waves (GWs), but these waves are really really really weak in ordinary situations.
+Black holes however are infinitely dense, and when they accelerate they cause noticeable GWs which causes them to lose just a little kinetic energy.
+They lose some speed and plunge closer to the other black hole, which makes them accelerate faster, lose more energy, fall closer... until they merge.
+Theres 3 phases to this merger. The inspiral, merger, and ringdown. To simulate black holes in inspiral, Post Newton Expansions (PNEs) work great.
+For this sim i decided to use equal mass binary black holes (m1=m2), since its a much easier problem to simulate.
+PN terms are basically correction terms to Newtonian gravity, M/r^2, to more closely match relativity (though these lose accuracy at close distances)
+Large black holes or black holes with companion stars also often have accretion disks, which are disks made of plasma and gas that orbit the black hole at relativistic speeds.
+So I put them in too! The disk particles use the Paczynski-Wiita potential, a very similar to Newton's but reproduces the effects of relativity in accretion disks nicely.
+In geometric units (where G=c=1), the acceleration of particles using Paczynski-Wiita is m/(r-2m)^2.
+This makes certain regions inside the Innermost Stable Circular Orbit (ISCO), well, unstable, and particles get sucked in. 
+One more problem though, gas really hates itself. Gas and plasma are fluids, and fluids tend to interact with themselves.
+In computational physics and even graphics, Smooth Particle Hydrodynamics (SPH) are your best bet for particle based (lagrangian) simulations of fluids.
+In SPH, every particle, i, finds its neighbors, j, which are within a certain smoothing radius, h.
+Then each particles calculates its density using a smoothing kernel, W, and its neighbors. This W kernel returns a number depending on the distance between i and j, and h.
+Once you have density, you can get pressure. I used a simple multiplier, k, but there are more accurate ways to do it. 
+Then, you go back to your neighbors and basically use the Navier-Stokes equation to find the acceleration due to pressure and viscosity.
+Now, this only works well if the fluid is roughly consistent in density, which is definitely not true for my case. This requires Adaptive Smoothing Length (ASL).
+In base SPH, you have one global h. Finding neighbors then is easy, find all particles within radius h. 
+However, in SPH, you need symmetric forces. With different smoothing lengths, W returns different numbers, which means i and j experience different forces. Not good.
+So, with ASL, you need to make it symmetric ((h_i+h_j)/2 or sqrt(h_i*h_j)). Now this works! 
+New problem, how do you find j? When the acceptance criteria now reuires knowing h_j, you cant know who j is, so you have to do a full search on every particle for each particle. Thats O(n^2).
+What we can do is limit the search radius using the maximum h. That way we only need to search within r<(h_i+h_max)/2 and then get rid of false positives.
+However, this makes dense regions way overcorrect. With ASL, the smoothing length is dependent on density. Higher density equals smaller h and the opposite is true.
+This means high density regions use a way higher maximum h than necessary. We can solve this by splitting the domain into cells, and each cell find its own maximum.
+Then each particle uses its cells maximum as its h_max. New problem (yes this keeps going), one cell can have a high h_max, and another cell within that range could have a lower h_max.
+This means the first cell can see the second, but not vice versa. But wait, isnt this the same problem as before? Yeah...
+But theres a small difference. Before, the O() was based on n, but now its based on b, the number of bins, which is dependent on the domain of the simulation.
+Currently, using cubical bins, it scales O(d^3 + n) (assuming the domain is a cube of size d), which is O(n) plus a constant. Now this constant is still big, but its less.
+So now we have a new goal: use as few bins as physically possible. First of all, scrap the cube bins, its redundant. 
+With this merger simulation, the distribution of particles is roughly radial, so we can use radial bins to cut down from d^3 to just d/2. This is already a huge gain, but we can do even better.
+The further out you go, the lower the density. When you have lower density, the same number of particles take up more volume. So the bins can be bigger the further out you go!
+We can define a 'full resolution area' which can be r<2a (with a being the distance of each black hole to the origin, which is equal for each black hole since they are equal mass) where the bins are equal widths,
+and we can define an 'exponential area' where the bins grow in size the further out you go.
+Now we can cut the number of bins from d/2 to dependent on the radius of the black holes' orbits. If we say the radius is 20 units (which I found is a good radius) and d=1000, we can get under 50 bins!
+Well, the ASL part is all in theory. I still need to implement that properly, which is tough.
+
+coming Soon tm
